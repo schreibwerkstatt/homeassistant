@@ -92,3 +92,19 @@ async def test_options_scan_interval(hass: HomeAssistant, mock_metrics: AsyncMoc
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert config_entry.options == {CONF_SCAN_INTERVAL: 120}
     assert config_entry.runtime_data.update_interval.total_seconds() == 120
+
+
+async def test_options_dashboard_users(hass: HomeAssistant, mock_metrics: AsyncMock, config_entry) -> None:
+    config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    (field,) = (k for k in result["data_schema"].schema if k == "dashboard_users")
+    options = result["data_schema"].schema[field].config["options"]
+    assert [o["label"] for o in options] == ["Anna", "Ben"]
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SCAN_INTERVAL: 60, "dashboard_users": ["anna@example.com"]}
+    )
+    await hass.async_block_till_done()
+    assert config_entry.options == {CONF_SCAN_INTERVAL: 60, "dashboard_users": ["anna@example.com"]}

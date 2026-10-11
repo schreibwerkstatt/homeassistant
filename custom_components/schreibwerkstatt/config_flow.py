@@ -18,6 +18,12 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_API_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, CONF_VERIFY_SSL
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .api import (
     SchreibwerkstattAuthError,
@@ -27,7 +33,7 @@ from .api import (
     SchreibwerkstattSchemaError,
     normalize_url,
 )
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, MAX_SCAN_INTERVAL, MIN_SCAN_INTERVAL
+from .const import CONF_DASHBOARD_USERS, DEFAULT_SCAN_INTERVAL, DOMAIN, MAX_SCAN_INTERVAL, MIN_SCAN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -122,19 +128,35 @@ class SchreibwerkstattConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class SchreibwerkstattOptionsFlow(OptionsFlow):
-    """Polling interval."""
+    """Polling interval and the people the dashboard shows in full."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
             return self.async_create_entry(data=user_input)
-        current = self.config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_SCAN_INTERVAL, default=current): vol.All(
-                        vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL)
-                    )
-                }
-            ),
-        )
+        options = self.config_entry.options
+        schema: dict[Any, Any] = {
+            vol.Required(
+                CONF_SCAN_INTERVAL, default=options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+            ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL))
+        }
+        people = self._people(options.get(CONF_DASHBOARD_USERS, []))
+        if people:
+            schema[
+                vol.Optional(
+                    CONF_DASHBOARD_USERS, description={"suggested_value": options.get(CONF_DASHBOARD_USERS)}
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(options=people, multiple=True, mode=SelectSelectorMode.LIST)
+            )
+        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))
+
+    def _people(self, chosen: list[str]) -> list[SelectOptionDict]:
+        """Users the server reports (token with per-user values), plus chosen ones it no longer does."""
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        users = dict(coordinator.data.users) if coordinator and coordinator.data else {}
+        for email in chosen:
+            users.setdefault(email, email)
+        return [
+            SelectOptionDict(value=email, label=name)
+            for email, name in sorted(users.items(), key=lambda u: u[1].casefold())
+        ]

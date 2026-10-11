@@ -39,7 +39,11 @@
       "init": {
         "title": "Options",
         "data": {
-          "scan_interval": "Polling interval (seconds)"
+          "scan_interval": "Polling interval (seconds)",
+          "dashboard_users": "People on the dashboard"
+        },
+        "data_description": {
+          "dashboard_users": "Only these people get their own sections and series on the dashboard; everyone else is listed compactly under “Other people”. Empty: everyone."
         }
       }
     }

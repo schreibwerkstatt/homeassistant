@@ -21,7 +21,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.loader import async_get_integration
 
-from .const import DOMAIN, GOAL_METRIC
+from .const import CONF_DASHBOARD_USERS, DOMAIN, GOAL_METRIC
 from .coordinator import SchreibwerkstattCoordinator
 from .entity import instance_key, user_identifier
 from .models import USER_LABELS
@@ -116,6 +116,8 @@ def async_dashboard_entities(hass: HomeAssistant) -> list[dict[str, Any]]:
             "title": entry.title,
             "includes_users": entry.runtime_data.data.includes_users,
             "users": _users(hass, entry.runtime_data),
+            # Shown in full; everyone else in one compact list. Empty: everyone.
+            "dashboard_users": entry.options.get(CONF_DASHBOARD_USERS) or [],
             "entities": _entities(hass, entry.runtime_data),
         }
         for entry in hass.config_entries.async_entries(DOMAIN)

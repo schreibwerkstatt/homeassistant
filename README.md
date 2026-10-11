@@ -41,7 +41,9 @@ Copy `custom_components/schreibwerkstatt` into your Home Assistant `config/custo
 | API token | `sw_…` token from the admin settings |
 | Verify SSL certificate | Turn off for self-signed certificates |
 
-Options: polling interval (default 60 s, 30–3600 s).
+Options: polling interval (default 60 s, 30–3600 s) and *People on the dashboard* — only the
+people chosen there get their own sections and series, everyone else is listed compactly under
+*Other people* (nothing chosen: everyone seen in the last 14 days).
 
 When the token is revoked or expires, Home Assistant asks for a new one (re-authentication) instead
 of leaving every sensor unavailable. The entry is keyed by the server's `instance_id`, so a changed

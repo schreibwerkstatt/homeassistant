@@ -39,7 +39,11 @@
       "init": {
         "title": "Optionen",
         "data": {
-          "scan_interval": "Abfrageintervall (Sekunden)"
+          "scan_interval": "Abfrageintervall (Sekunden)",
+          "dashboard_users": "Personen im Dashboard"
+        },
+        "data_description": {
+          "dashboard_users": "Nur diese Personen bekommen im Dashboard eigene Abschnitte und Kurven; alle anderen stehen kompakt unter „Restliche Personen“. Leer: alle."
         }
       }
     }

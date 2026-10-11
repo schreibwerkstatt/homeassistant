@@ -6,8 +6,9 @@
 //
 // Built-in cards only. Entity IDs come from the integration (websocket
 // `schreibwerkstatt/entities`), never from names: they depend on the users'
-// display names and the HA language. One section per user, a daily-goal gauge
-// only where a goal is set, one series per AI model — all as reported now.
+// display names and the HA language. One section per user (or per user chosen in
+// the integration options, the rest in one compact list), a daily-goal gauge only
+// where a goal is set, one series per AI model — all as reported now.
 // "Take control" in the dashboard menu turns the result into editable YAML.
 
 const TEXT = {
@@ -25,7 +26,7 @@ const TEXT = {
     goalReached7: "Tagesziel erreicht – 7 Tage", ai: "KI", costPerMonth: "KI-Kosten pro Monat",
     ledger: "Ledger", inputPerDay: "Input-Tokens pro Tag", outputPerDay: "Output-Tokens pro Tag (inkl. Denken)",
     cacheRead: "Cache", cacheReadTokens: "Cache-Read-Tokens", cacheWriteTokens: "Cache-Write-Tokens",
-    otherPeople: "Weitere Personen – länger nicht gesehen",
+    otherPeople: "Weitere Personen – länger nicht gesehen", restPeople: "Restliche Personen",
     stock: "Bestand", chapters: "Kapitel", pages: "Abschnitte", normPages: "Normseiten", chars: "Zeichen",
     charsToday: "Zeichen heute", chars7: "Zeichen pro Tag – 7 Tage", charsTotal: "Zeichen gesamt",
     perBook: "Pro Buch (Ø)", perAuthor: "Pro Person (Ø)", charsPerDay: "Netto-Zeichen pro Tag",
@@ -71,7 +72,7 @@ const TEXT = {
     goalReached7: "Daily goal reached – 7 days", ai: "AI", costPerMonth: "AI cost per month",
     ledger: "Ledger", inputPerDay: "Input tokens per day", outputPerDay: "Output tokens per day (incl. thinking)",
     cacheRead: "Cache", cacheReadTokens: "Cache read tokens", cacheWriteTokens: "Cache write tokens",
-    otherPeople: "Other people – not seen recently",
+    otherPeople: "Other people – not seen recently", restPeople: "Other people",
     stock: "Content", chapters: "Chapters", pages: "Sections", normPages: "Standard pages", chars: "Characters",
     charsToday: "Characters today", chars7: "Characters per day – 7 days", charsTotal: "Characters total",
     perBook: "Per book (avg)", perAuthor: "Per person (avg)", charsPerDay: "Net characters per day",
@@ -329,14 +330,15 @@ function userSection(t, ent, hass, user) {
   );
 }
 
-// People not seen for ACTIVE_DAYS: one row each with when they were last seen.
-function dormantSection(t, ent, users) {
+// People not shown in full (not seen for ACTIVE_DAYS, or not chosen in the options):
+// one row each with when they were last seen.
+function compactSection(heading, ent, users) {
   const entities = users.map((user) => {
     const seen = ent.id("sw_user_last_seen_timestamp_seconds", {}, user.user);
     ent.retire(user.user);
     return seen && { entity: seen, name: user.name, icon: "mdi:account-clock" };
   });
-  return section(t.otherPeople, "mdi:account-multiple-outline", [
+  return section(heading, "mdi:account-multiple-outline", [
     compact(entities).length > 0 && { type: "entities", entities: compact(entities), state_color: false },
   ]);
 }
@@ -367,7 +369,7 @@ function peopleView(t, ent, entry, hass, people) {
     [
       ...people.active.map((user) => userSection(t, ent, hass, user)),
       noUsers,
-      dormantSection(t, ent, people.dormant),
+      compactSection(people.chosen ? t.restPeople : t.otherPeople, ent, people.rest),
     ],
     { max_columns: 4 },
   );
@@ -692,8 +694,14 @@ class SchreibwerkstattDashboardStrategy extends HTMLElement {
 
     const ent = new Entities(entry.entities);
     const usage = await modelUsage(hass, ent);
-    const people = { active: [], dormant: [] };
-    for (const user of entry.users) people[isActive(hass, ent, user) ? "active" : "dormant"].push(user);
+    // Chosen in the options: those in full, active or not, everyone else compact.
+    // Nothing chosen: everyone seen within ACTIVE_DAYS in full.
+    const chosen = new Set(entry.dashboard_users || []);
+    const people = { active: [], rest: [], chosen: chosen.size > 0 };
+    for (const user of entry.users) {
+      const full = people.chosen ? chosen.has(user.user) : isActive(hass, ent, user);
+      people[full ? "active" : "rest"].push(user);
+    }
     // Order matters: the diagnostics view collects what the others did not use.
     const views = [
       todayView(t, ent, entry, hass, people),

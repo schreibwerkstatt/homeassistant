@@ -11,6 +11,10 @@ HISTORY_PATH: Final = "/metrics/history.json"
 # Highest /metrics.json contract version this integration understands.
 SUPPORTED_SCHEMA: Final = 1
 
+# Users (e-mail) the dashboard shows in full; everyone else under "other people".
+# Not set or empty: everyone.
+CONF_DASHBOARD_USERS: Final = "dashboard_users"
+
 DEFAULT_SCAN_INTERVAL: Final = 60
 MIN_SCAN_INTERVAL: Final = 30
 MAX_SCAN_INTERVAL: Final = 3600

@@ -5,15 +5,16 @@ the server keeps a snapshot of every book every evening. /metrics/history.json
 returns those days under the names and labels of /metrics.json; each series
 goes into the statistics of the sensor that shows the metric live.
 
-Only days before the sensor's first recorded statistic are written, so what the
-recorder collected itself is never overwritten and a second run (every start)
-writes nothing. One row per day at 23:00 local, when the server takes its
-snapshot: a line or bar per day, which is what the charts ask for.
+Only days before the first statistic the recorder wrote itself are written, so
+what it collected is never overwritten, and a second run (every start) writes
+nothing that is already there. One row per day at 23:00 local, when the server
+takes its snapshot: a line or bar per day, which is what the charts ask for.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 import logging
 from typing import Any
@@ -36,6 +37,9 @@ from .sensor import zone
 _LOGGER = logging.getLogger(__name__)
 
 _EPOCH = datetime(2000, 1, 1, tzinfo=UTC)
+# Carries the start of an imported sum. HA counts the change of the very first row as
+# its whole sum, so the row goes where no chart reaches back to.
+_ANCHOR = _EPOCH
 _SUM_CLASSES = ("total", "total_increasing")
 
 # sample key → (labels, {day: value})
@@ -79,16 +83,18 @@ async def async_import_history(hass: HomeAssistant, coordinator: Schreibwerkstat
         if convert is None:
             continue
 
-        first = await recorder.async_add_executor_job(_first_row, hass, entity_id, with_sum)
+        slots = _slots(points, tz)
+        recorded = await recorder.async_add_executor_job(_recorded, hass, entity_id, with_sum, slots, tz)
         rows = _rows(
             points,
             tz,
-            cutoff=first[0] if first else None,
+            cutoff=recorded.start,
             convert=convert,
             with_sum=with_sum,
             daily_reset=metric.reset == "day",
-            end_sum=first[1] if first else None,
+            end_sum=_end_sum(recorded, points, tz, convert) if with_sum else None,
         )
+        rows = [row for row in rows if not _unchanged(row, recorded.imported, with_sum)]
         if rows:
             async_import_statistics(hass, _metadata(entity_id, unit, with_sum=with_sum), rows)
             imported.append(entity_id)
@@ -130,27 +136,78 @@ def _converter(device_class: str | None, server_unit: str | None, unit: str | No
     return lambda v: DurationConverter.convert(v, server_unit or "s", unit)
 
 
-def _first_row(
-    hass: HomeAssistant, statistic_id: str, with_sum: bool
-) -> tuple[datetime, float | None] | None:
-    """Start (and sum) of the first hourly statistic; for sums the first row that has one.
+@dataclass(slots=True)
+class _Recorded:
+    """What the recorder has: where its own statistics begin and what was imported before."""
+
+    start: datetime | None = None
+    sum: float | None = None
+    # Sum at the end of the local day `start` falls on.
+    day_end_sum: float | None = None
+    # Rows on import slots before `start`: start → sum (sums) or max.
+    imported: dict[datetime, float] = field(default_factory=dict)
+
+
+def _slots(points: dict[date, float], tz: Any) -> set[datetime]:
+    """Where imported rows go: 23:00 of every day, and the anchor."""
+    return {_at(day, 23, tz) for day in points} | {_ANCHOR}
+
+
+def _recorded(
+    hass: HomeAssistant, statistic_id: str, with_sum: bool, slots: set[datetime], tz: Any
+) -> _Recorded:
+    """First hourly row off the import slots, i.e. the first one the recorder wrote itself.
 
     Runs in the recorder's executor. Months first, so a sensor with years of history
-    does not load every hourly row.
+    does not load every hourly row; imported months hold one row per day.
     """
-    types: set[Any] = {"sum"} if with_sum else {"max"}
+    key = "sum" if with_sum else "max"
+    types: set[Any] = {key}
+    out = _Recorded()
     months = statistics_during_period(hass, _EPOCH, None, {statistic_id}, "month", None, types)
     for month in months.get(statistic_id, []):
-        if with_sum and month.get("sum") is None:
-            continue
-        start = datetime.fromtimestamp(month["start"], UTC)
+        begin = datetime.fromtimestamp(month["start"], UTC)
         hours = statistics_during_period(
-            hass, start, start + timedelta(days=32), {statistic_id}, "hour", None, types
+            hass, begin, begin + timedelta(days=32), {statistic_id}, "hour", None, types
         )
         for row in hours.get(statistic_id, []):
-            if not with_sum or row.get("sum") is not None:
-                return datetime.fromtimestamp(row["start"], UTC), row.get("sum")
-    return None
+            start, value = datetime.fromtimestamp(row["start"], UTC), row.get(key)
+            if value is None:
+                continue
+            if start in slots:
+                out.imported[start] = value
+                continue
+            out.start, out.sum = start, value
+            if with_sum:
+                midnight = _at(start.astimezone(tz).date() + timedelta(days=1), 0, tz)
+                day = statistics_during_period(hass, start, midnight, {statistic_id}, "hour", None, types)
+                sums = [r["sum"] for r in day.get(statistic_id, []) if r.get("sum") is not None]
+                out.day_end_sum = sums[-1] if sums else value
+            return out
+    return out
+
+
+def _end_sum(recorded: _Recorded, points: dict[date, float], tz: Any, convert: Convert) -> float:
+    """Sum the imported rows end on, so the first recorded day continues without a jump.
+
+    The recorder starts a new sensor's sum at 0 (it continues from its short-term
+    statistics, which an import never reaches) and counts only what changed while it
+    was watching. With the server's value for that first day, the part before
+    (written before the sensor existed) goes before the recorded rows, and the day
+    shows what the server says.
+    """
+    if recorded.start is None or recorded.sum is None:
+        return 0.0
+    day = recorded.start.astimezone(tz).date()
+    if day in points and recorded.day_end_sum is not None:
+        return recorded.day_end_sum - convert(points[day])
+    return recorded.sum
+
+
+def _unchanged(row: StatisticData, imported: dict[datetime, float], with_sum: bool) -> bool:
+    old = imported.get(row["start"])
+    new = row["sum"] if with_sum else row["max"]
+    return old is not None and abs(old - new) < 1e-6
 
 
 def _at(day: date, hour: int, tz: Any) -> datetime:
@@ -171,8 +228,10 @@ def _rows(
     """One row per day before `cutoff`.
 
     Sums: every series with a sum restarts daily, so a day's change is its value.
-    The running sum ends where the recorded statistics begin (`end_sum`), so the
-    first recorded day does not show the whole past as one jump.
+    The running sum ends at `end_sum`, where the recorded statistics begin, so the
+    first recorded day does not show the whole past as one jump. It starts below
+    zero then; the anchor row carries that start, or the first day's change would
+    be its whole sum.
     """
     rows: list[StatisticData] = []
     for day in sorted(points):
@@ -186,12 +245,18 @@ def _rows(
             )
         else:
             rows.append(StatisticData(start=start, mean=value, min=value, max=value))
-    if with_sum:
+    if with_sum and rows:
         total = sum(row["state"] for row in rows)
-        running = (end_sum - total) if end_sum is not None else 0.0
+        running = (end_sum or 0.0) - total
         for row in rows:
             running += row["state"]
             row["sum"] = running
+        start = rows[0]["sum"] - rows[0]["state"]
+        if start:
+            anchor = StatisticData(start=_ANCHOR, state=0.0, sum=start)
+            if daily_reset:
+                anchor["last_reset"] = _ANCHOR
+            rows.insert(0, anchor)
     return rows
 
 

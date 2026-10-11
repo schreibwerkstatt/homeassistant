@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.schreibwerkstatt.const import DOMAIN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
@@ -38,6 +40,7 @@ async def test_entities_by_metric_and_user(
     entry = await _entities(hass, hass_ws_client, config_entry)
     assert entry["includes_users"] is True
     assert [u["name"] for u in entry["users"]] == ["Anna", "Ben"]
+    assert entry["dashboard_users"] == []
 
     # Per-user entities carry the e-mail, not the name-derived entity ID, as key.
     writing = _find(entry, "sw_user_writing_seconds_today", "anna@example.com")
@@ -51,6 +54,19 @@ async def test_entities_by_metric_and_user(
     # Disabled by default → not offered; device info only → no entity.
     assert _find(entry, "sw_cache_read_tokens_total", model="claude-sonnet-4-6", provider="claude") is None
     assert not any(e["metric"] == "sw_build_info" for e in entry["entities"])
+
+
+async def test_dashboard_users_from_options(
+    hass: HomeAssistant, hass_ws_client: Any, mock_metrics: AsyncMock, config_entry
+) -> None:
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=INSTANCE,
+        data=dict(config_entry.data),
+        options={"dashboard_users": ["ben@example.com"]},
+    )
+    entry = await _entities(hass, hass_ws_client, config_entry)
+    assert entry["dashboard_users"] == ["ben@example.com"]
 
 
 async def test_renamed_user_device_and_entity(
