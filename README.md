@@ -58,7 +58,7 @@ host name only needs the URL updated — re-adding the integration with the new 
 | Schreibwerkstatt Content | books (all / with text), chapters, sections, characters, words, standard pages, characters per book and per person |
 | Schreibwerkstatt Writing | writing / editing / dictation time today, net characters and words today, characters per writing hour |
 | Schreibwerkstatt Jobs | running and queued jobs, finished / failed in 24 h |
-| Schreibwerkstatt AI | cost today / this month / total, tokens per provider and model, Anthropic billing |
+| Schreibwerkstatt AI | cost today / this month / total, tokens per model, Anthropic billing |
 | Schreibwerkstatt Block merge | merge telemetry (diagnostic) |
 | **one device per user** | writing time today, daily goal %, *daily goal reached*, characters and words (today and in stock), characters per writing hour, books, AI cost, last seen |
 
@@ -98,8 +98,10 @@ actually exist — characters first (today, in stock, per book and person, pace)
 user seen in the last 14 days under *People* (the others in a compact list; daily goal gauge and AI
 tiles only where they apply), daily token charts for the AI models used in the last
 30 days (input and output apart), every model ever used under *Content & operations*, enabled
-breakdowns under *Diagnostics*. No entity IDs to adapt: they depend on the users'
-display names and your HA language, so the strategy asks the integration instead of guessing.
+breakdowns under *Diagnostics*. Models that run on the Schreibwerkstatt server itself (`ollama`,
+`openai-compat`) are marked *Local*; they cost nothing, so their card carries tokens only. No entity
+IDs to adapt: they depend on the users' display names and your HA language, so the strategy asks
+the integration instead of guessing.
 
 In **storage mode** (the HA default), the integration registers the strategy module as a Lovelace
 resource on start-up — nothing to do. **Settings → Dashboards → Add dashboard → New dashboard from

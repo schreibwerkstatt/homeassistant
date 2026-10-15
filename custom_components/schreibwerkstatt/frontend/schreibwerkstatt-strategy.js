@@ -8,7 +8,8 @@
 // `schreibwerkstatt/entities`), never from names: they depend on the users'
 // display names and the HA language. One section per user (or per user chosen in
 // the integration options, the rest in one compact list), a daily-goal gauge only
-// where a goal is set, one series per AI model — all as reported now.
+// where a goal is set, one series per AI model — all models ever used, the ones of
+// the Schreibwerkstatt server itself marked as local.
 // "Take control" in the dashboard menu turns the result into editable YAML.
 
 const TEXT = {
@@ -41,7 +42,8 @@ const TEXT = {
     jobStatus: { done: "Erfolgreich", error: "Fehler", cancelled: "Abgebrochen" },
     jobs24: "Jobs – 24 h", failedJobs: "Fehlgeschlagene Jobs", jobsRunning: "Jobs laufen",
     server: "Server", database: "Datenbank", dbSize: "Datenbankgrösse", jsErrors: "JS-Fehler 24 h",
-    aiTotals: "KI-Gesamtkosten", inputTokens: "Input-Tokens", outputTokens: "Output-Tokens",
+    aiTotals: "KI-Modelle", inputTokens: "Input-Tokens", outputTokens: "Output-Tokens",
+    local: "Lokal", localModels: "Lokale Modelle",
     process: "Prozess", uptime: "Laufzeit", schema: "Schema", memory24: "Speicher – 24 h",
     memory: "Arbeitsspeicher", heap: "Heap", merge: "Block-Merge", silent: "Still",
     conflicts: "Konflikte", overwritten: "Überschrieben", resolved: "Konflikte gelöst",
@@ -87,7 +89,8 @@ const TEXT = {
     jobStatus: { done: "Done", error: "Failed", cancelled: "Cancelled" },
     jobs24: "Jobs – 24 h", failedJobs: "Failed jobs", jobsRunning: "Jobs running",
     server: "Server", database: "Database", dbSize: "Database size", jsErrors: "JS errors 24 h",
-    aiTotals: "AI cost total", inputTokens: "Input tokens", outputTokens: "Output tokens",
+    aiTotals: "AI models", inputTokens: "Input tokens", outputTokens: "Output tokens",
+    local: "Local", localModels: "Local models",
     process: "Process", uptime: "Uptime", schema: "Schema", memory24: "Memory – 24 h",
     memory: "Memory", heap: "Heap", merge: "Block merge", silent: "Silent",
     conflicts: "Conflicts", overwritten: "Overwritten", resolved: "Conflicts resolved",
@@ -207,12 +210,24 @@ function alertBadge(entity, name, color, extra = {}) {
   );
 }
 
-// Label of an AI sample: the model, Claude IDs shortened (claude-opus-5-5 → Opus 5.5,
-// claude-opus-4-8[1m] → Opus 4.8 (1M)); anything else as reported.
-function modelName(labels) {
-  const model = labels.model || labels.provider || "";
+// The server bills only Claude, so every other provider is a model running on the
+// Schreibwerkstatt server itself: no API, no cost. A missing provider falls back to
+// the model name — a Claude ID speaks for itself.
+function isLocal(labels) {
+  const provider = labels.provider;
+  if (provider && provider !== "unknown") return provider !== "claude";
+  return !/^claude-/.test(labels.model || "");
+}
+
+// Label of an AI sample: Claude IDs shortened (claude-opus-5-5 → Opus 5.5,
+// claude-opus-4-8[1m] → Opus 4.8 (1M)), models of the server marked as local
+// ("Lokal · mistral-small3.2"), anything the server could not resolve collected
+// under "Lokale Modelle" — the raw "unknown" never reaches the dashboard.
+function modelName(t, labels) {
+  const model = [labels.model, labels.provider].find((v) => v && v !== "unknown");
+  if (!model) return t.localModels;
   const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m\])?$/.exec(model);
-  if (!m) return model;
+  if (!m) return isLocal(labels) ? `${t.local} · ${model}` : model;
   const family = m[1][0].toUpperCase() + m[1].slice(1);
   return `${family} ${m[2]}${m[3] ? `.${m[3]}` : ""}${m[4] ? " (1M)" : ""}`;
 }
@@ -454,7 +469,7 @@ function historyView(t, ent, hass, people, usage) {
   );
   // One series per model in use.
   const series = (metric, prefix = "") =>
-    models.map((labels) => [id(metric, labels), `${prefix}${modelName(labels)}`]);
+    models.map((labels) => [id(metric, labels), `${prefix}${modelName(t, labels)}`]);
 
   const weekly = { chart_type: "line", period: "week", days_to_show: 365 };
   const charsToday = id("sw_chars_today");
@@ -613,14 +628,17 @@ function opsView(t, ent, usage) {
         "mdi:cash",
         allModels.map((labels) => {
           // Cache rows only once their (by default disabled) entities are enabled.
+          // Local models cost nothing by definition — their 0.00 row stays out of the
+          // card, but the sensor counts as placed: it belongs nowhere else either.
+          const cost = id("sw_cost_usd_total", labels);
           const entities = rows([
-            [id("sw_cost_usd_total", labels), t.aiTotal],
+            [isLocal(labels) ? null : cost, t.aiTotal],
             [id("sw_tokens_in_total", labels), t.inputTokens],
             [id("sw_tokens_out_total", labels), t.outputTokens],
             [id("sw_cache_read_tokens_total", labels), t.cacheReadTokens],
             [id("sw_cache_creation_tokens_total", labels), t.cacheWriteTokens],
           ]);
-          return entities.length > 0 && { type: "entities", title: modelName(labels), state_color: false, entities };
+          return entities.length > 0 && { type: "entities", title: modelName(t, labels), state_color: false, entities };
         }),
       ),
     ],
