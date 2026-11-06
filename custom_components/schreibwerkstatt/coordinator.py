@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import SchreibwerkstattAuthError, SchreibwerkstattClient, SchreibwerkstattError
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .models import MetricsData
+from .store import EntryStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,15 +31,17 @@ class SchreibwerkstattCoordinator(DataUpdateCoordinator[MetricsData]):
         hass: HomeAssistant,
         entry: SchreibwerkstattConfigEntry,
         client: SchreibwerkstattClient,
+        store: EntryStore,
     ) -> None:
         super().__init__(
             hass,
             _LOGGER,
             config_entry=entry,
             name=DOMAIN,
-            update_interval=timedelta(seconds=entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)),
+            update_interval=scan_interval(entry),
         )
         self.client = client
+        self.store = store
 
     async def _async_update_data(self) -> MetricsData:
         try:
@@ -47,4 +50,12 @@ class SchreibwerkstattCoordinator(DataUpdateCoordinator[MetricsData]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except SchreibwerkstattError as err:
             raise UpdateFailed(str(err)) from err
-        return MetricsData.from_json(raw)
+        try:
+            return MetricsData.from_json(raw)
+        except (AttributeError, KeyError, TypeError, ValueError) as err:
+            raise UpdateFailed(f"unexpected metrics document: {err!r}") from err
+
+
+def scan_interval(entry: ConfigEntry) -> timedelta:
+    """Polling interval from the options."""
+    return timedelta(seconds=entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))

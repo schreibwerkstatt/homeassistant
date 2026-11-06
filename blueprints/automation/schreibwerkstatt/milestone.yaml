@@ -6,6 +6,12 @@ blueprint:
     person. Not after a restart or an outage: only a real step from one value
     to the next counts. In the actions, `{{ milestone }}` is the mark that was
     passed and `{{ name }}` the sensor's name.
+
+    A counter can fall and rise again (text deleted and written anew) and pass
+    the same mark twice. To celebrate each mark only once, create a Number
+    helper (Settings → Devices & services → Helpers → Number, minimum 0,
+    maximum at least the highest mark you expect, step 1) and choose it under
+    "Highest mark": it keeps the mark reached last, and only higher ones count.
   domain: automation
   source_url: https://github.com/schreibwerkstatt/homeassistant/blob/main/blueprints/automation/schreibwerkstatt/milestone.yaml
   input:
@@ -26,6 +32,17 @@ blueprint:
           min: 1
           max: 100000000
           mode: box
+    record:
+      name: Highest mark (optional)
+      description: >
+        Number helper that remembers the highest mark reached, so a mark passed
+        again after the counter fell does not run the actions a second time.
+        Empty: every pass counts.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: input_number
     actions:
       name: Actions
       description: E.g. a notification "{{ name }} – {{ milestone }} reached".
@@ -40,6 +57,8 @@ triggers:
 
 variables:
   step: !input step
+  record: !input record
+  keep: "{{ record is string and record != '' }}"
   old: "{{ trigger.from_state.state | float(none) if trigger.from_state else none }}"
   new: "{{ trigger.to_state.state | float(none) if trigger.to_state else none }}"
   milestone: "{{ ((new // step) * step) | int if new is not none else 0 }}"
@@ -48,5 +67,19 @@ variables:
 conditions:
   - condition: template
     value_template: "{{ old is not none and new is not none and new // step > old // step }}"
+  - condition: template
+    value_template: >
+      {{ not keep or milestone > (states(record) | float(0)) }}
 
-actions: !input actions
+actions:
+  # Beyond the helper's maximum the mark is not kept; the actions run all the same.
+  - if:
+      - condition: template
+        value_template: "{{ keep and milestone <= (state_attr(record, 'max') | float(0)) }}"
+    then:
+      - action: input_number.set_value
+        target:
+          entity_id: "{{ record }}"
+        data:
+          value: "{{ milestone }}"
+  - sequence: !input actions

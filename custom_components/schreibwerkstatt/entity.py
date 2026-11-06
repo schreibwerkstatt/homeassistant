@@ -20,6 +20,16 @@ def instance_key(coordinator: SchreibwerkstattCoordinator) -> str:
     return coordinator.config_entry.unique_id or coordinator.config_entry.entry_id
 
 
+def sensor_unique_id(coordinator: SchreibwerkstattCoordinator, key: str) -> str:
+    """Unique ID of the sensor showing the sample `key`."""
+    return f"{instance_key(coordinator)}_{key}"
+
+
+def goal_unique_id(coordinator: SchreibwerkstattCoordinator, user: str | None) -> str:
+    """Unique ID of a user's "daily goal reached" binary sensor."""
+    return f"{instance_key(coordinator)}_daily_goal_reached_{user}"
+
+
 def main_device_info(coordinator: SchreibwerkstattCoordinator) -> DeviceInfo:
     """The Schreibwerkstatt instance itself."""
     data = coordinator.data

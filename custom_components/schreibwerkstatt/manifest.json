@@ -2,6 +2,10 @@
   "domain": "schreibwerkstatt",
   "name": "Schreibwerkstatt",
   "after_dependencies": ["frontend", "http", "recorder"],
+  "categories": [
+    "computers_network.monitoring",
+    "productivity_information.documents_photos"
+  ],
   "codeowners": ["@bedeberger"],
   "config_flow": true,
   "dependencies": ["websocket_api"],
@@ -10,5 +14,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/schreibwerkstatt/homeassistant/issues",
   "requirements": [],
-  "version": "0.6.1"
+  "version": "0.7.0"
 }

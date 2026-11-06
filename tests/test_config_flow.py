@@ -10,6 +10,7 @@ from custom_components.schreibwerkstatt.api import (
     SchreibwerkstattAuthError,
     SchreibwerkstattConnectionError,
     SchreibwerkstattNotSupportedError,
+    SchreibwerkstattRedirectError,
     SchreibwerkstattSchemaError,
 )
 from custom_components.schreibwerkstatt.const import DOMAIN
@@ -108,3 +109,47 @@ async def test_options_dashboard_users(hass: HomeAssistant, mock_metrics: AsyncM
     )
     await hass.async_block_till_done()
     assert config_entry.options == {CONF_SCAN_INTERVAL: 60, "dashboard_users": ["anna@example.com"]}
+
+
+async def test_user_flow_redirect_names_the_target(hass: HomeAssistant) -> None:
+    with patch(CLIENT, new_callable=AsyncMock, side_effect=SchreibwerkstattRedirectError(URL)):
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_URL: "http://sw.example.com", CONF_API_TOKEN: TOKEN}
+        )
+    assert result["errors"] == {"base": "redirect"}
+    assert result["description_placeholders"]["location"] == URL
+
+
+async def test_reconfigure_changes_url(hass: HomeAssistant, mock_metrics: AsyncMock, config_entry) -> None:
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    result = await config_entry.start_reconfigure_flow(hass)
+    assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_URL: "https://neu.example.com/", CONF_VERIFY_SSL: False}
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry.data == {
+        CONF_URL: "https://neu.example.com",
+        CONF_API_TOKEN: TOKEN,
+        CONF_VERIFY_SSL: False,
+    }
+    assert config_entry.title == "neu.example.com"
+
+
+async def test_reconfigure_rejects_other_instance(
+    hass: HomeAssistant, mock_metrics: AsyncMock, metrics_doc, config_entry
+) -> None:
+    config_entry.add_to_hass(hass)
+    mock_metrics.return_value = {**metrics_doc, "instance_id": "someone-else"}
+    result = await config_entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_URL: "https://other.example.com"}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "wrong_instance"
+    assert config_entry.data[CONF_URL] == URL

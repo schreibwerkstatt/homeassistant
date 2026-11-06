@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
@@ -17,6 +17,7 @@ from homeassistant.components.recorder.models import StatisticData
 from homeassistant.components.recorder.statistics import async_import_statistics, statistics_during_period
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 
 from .conftest import INSTANCE
 
@@ -234,3 +235,71 @@ async def test_repairs_past_summed_from_zero(
         "2026-09-04": 900,  # the server's day, not only the 250 seen after install
         "2026-09-05": 100,
     }
+
+
+async def test_sizes_are_converted_to_the_sensor_unit(
+    recorder_mock: Any, hass: HomeAssistant, mock_metrics: AsyncMock, config_entry
+) -> None:
+    """Bytes on the wire, MiB on the sensor: the statistics must hold MiB."""
+    await _setup_without_history(hass, config_entry)
+    entity = _id(hass, "sw_db_size_bytes")
+    assert hass.states.get(entity).attributes["unit_of_measurement"] == "MiB"
+    doc = {**HISTORY_DOC, "series": [_series("sw_db_size_bytes", [1048576, 2097152, 3145728])]}
+    with patch(HISTORY, new_callable=AsyncMock, return_value=doc):
+        await async_import_history(hass, config_entry.runtime_data)
+    await async_wait_recording_done(hass)
+    assert await _daily(hass, entity, "max") == dict(zip(DAYS, [1, 2, 3], strict=True))
+
+
+async def test_no_rows_for_hours_not_over_yet(
+    recorder_mock: Any, hass: HomeAssistant, mock_metrics: AsyncMock, config_entry
+) -> None:
+    """A point for today goes at 23:00, which the recorder still has to write itself."""
+    await _setup_without_history(hass, config_entry)
+    entity = _id(hass, "sw_chars")
+    today = dt_util.now(ZURICH).date()
+    days = [(today - timedelta(days=1)).isoformat(), today.isoformat()]
+    doc = {**HISTORY_DOC, "series": [_series("sw_chars", [100, 200], days=days)]}
+    with patch(HISTORY, new_callable=AsyncMock, return_value=doc):
+        await async_import_history(hass, config_entry.runtime_data)
+    await async_wait_recording_done(hass)
+    rows = await get_instance(hass).async_add_executor_job(
+        statistics_during_period, hass, datetime(2000, 1, 1, tzinfo=UTC), None, {entity}, "hour", {}, {"max"}
+    )
+    starts = [datetime.fromtimestamp(r["start"], UTC) for r in rows.get(entity, [])]
+    assert starts
+    assert all(start + timedelta(hours=1) <= dt_util.utcnow() for start in starts)
+
+
+async def test_finished_import_is_not_fetched_again(
+    recorder_mock: Any, hass: HomeAssistant, mock_metrics: AsyncMock, config_entry
+) -> None:
+    await _setup_without_history(hass, config_entry)
+    entity = _id(hass, "sw_chars_today")
+    _recorder_rows(hass, entity, [("2026-09-04", 15, 0, 0), ("2026-09-04", 16, 250, 250)])
+    await async_wait_recording_done(hass)
+    days = [*DAYS[1:], "2026-09-04"]
+    doc = {**HISTORY_DOC, "series": [_series("sw_chars_today", [600, 600, 900], days=days)]}
+    with patch(HISTORY, new_callable=AsyncMock, return_value=doc) as history:
+        await async_import_history(hass, config_entry.runtime_data)
+        await async_wait_recording_done(hass)
+        # The series reaches the recorder's first day, every other sensor has none: done.
+        await async_import_history(hass, config_entry.runtime_data)
+        assert history.await_count == 1
+
+        # A new server version may report more series.
+        config_entry.runtime_data.data.version = "9.9.9"
+        await async_import_history(hass, config_entry.runtime_data)
+        assert history.await_count == 2
+
+
+async def test_unfinished_import_is_fetched_again(
+    recorder_mock: Any, hass: HomeAssistant, mock_metrics: AsyncMock, config_entry
+) -> None:
+    """Before the recorder has taken over, the end of the past can still move."""
+    await _setup_without_history(hass, config_entry)
+    with patch(HISTORY, new_callable=AsyncMock, return_value=HISTORY_DOC) as history:
+        await async_import_history(hass, config_entry.runtime_data)
+        await async_wait_recording_done(hass)
+        await async_import_history(hass, config_entry.runtime_data)
+    assert history.await_count == 2

@@ -10,7 +10,8 @@ release notes, commit, tag, **`git push` to `origin/main` and `origin/v<version>
 `gh release create`). Push is part of the workflow — never stop after the
 local commit/tag.
 
-The release is the artifact HACS shows under *Einstellungen → Updates*; a
+The release is the artifact the Home Assistant Marketplace (HACS before
+HA 2026.11) shows under *Einstellungen → Updates*; a
 local tag or a commit on `main` alone does nothing there. Verify the push
 landed (`git ls-remote --tags origin v<version>`) before
 `gh release create`.

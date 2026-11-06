@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 import aiohttp
+from yarl import URL
 
 from .const import HISTORY_PATH, HISTORY_TIMEOUT, METRICS_PATH, REQUEST_TIMEOUT, SUPPORTED_SCHEMA
 
@@ -20,6 +21,14 @@ class SchreibwerkstattAuthError(SchreibwerkstattError):
 
 class SchreibwerkstattConnectionError(SchreibwerkstattError):
     """Server unreachable, timed out or answered with an unexpected status."""
+
+
+class SchreibwerkstattRedirectError(SchreibwerkstattConnectionError):
+    """Server answered with a redirect; the token is not sent after it."""
+
+    def __init__(self, location: str) -> None:
+        super().__init__(f"redirect to {location}")
+        self.location = location
 
 
 class SchreibwerkstattNotSupportedError(SchreibwerkstattError):
@@ -54,21 +63,11 @@ class SchreibwerkstattClient:
 
     async def async_get_metrics(self) -> dict[str, Any]:
         """Return the parsed /metrics.json document."""
-        data = await self._get(METRICS_PATH, REQUEST_TIMEOUT)
-        if not isinstance(data, dict) or not isinstance(data.get("metrics"), list):
-            raise SchreibwerkstattSchemaError("unexpected document")
-        if int(data.get("schema") or 0) > SUPPORTED_SCHEMA:
-            raise SchreibwerkstattSchemaError(f"schema {data.get('schema')}")
-        return data
+        return _checked(await self._get(METRICS_PATH, REQUEST_TIMEOUT), "metrics")
 
     async def async_get_history(self) -> dict[str, Any]:
         """Return the daily series of /metrics/history.json (servers from 4.21 on)."""
-        data = await self._get(HISTORY_PATH, HISTORY_TIMEOUT)
-        if not isinstance(data, dict) or not isinstance(data.get("series"), list):
-            raise SchreibwerkstattSchemaError("unexpected document")
-        if int(data.get("schema") or 0) > SUPPORTED_SCHEMA:
-            raise SchreibwerkstattSchemaError(f"schema {data.get('schema')}")
-        return data
+        return _checked(await self._get(HISTORY_PATH, HISTORY_TIMEOUT), "series")
 
     async def _get(self, path: str, timeout: float) -> Any:
         headers = {
@@ -82,6 +81,11 @@ class SchreibwerkstattClient:
                 ) as resp:
                     if resp.status in (401, 403):
                         raise SchreibwerkstattAuthError(f"HTTP {resp.status}")
+                    if resp.status in (301, 302, 303, 307, 308):
+                        # Not followed: the token would go along to wherever it points.
+                        location = resp.headers.get("Location", "")
+                        target = resp.url.join(URL(location)) if location else resp.url
+                        raise SchreibwerkstattRedirectError(str(target).removesuffix(path))
                     if resp.status == 404:
                         raise SchreibwerkstattNotSupportedError(f"no {path}")
                     if resp.status != 200:
@@ -89,3 +93,16 @@ class SchreibwerkstattClient:
                     return await resp.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             raise SchreibwerkstattConnectionError(str(err) or type(err).__name__) from err
+
+
+def _checked(data: Any, items: str) -> dict[str, Any]:
+    """The document if it is one this integration understands."""
+    if not isinstance(data, dict) or not isinstance(data.get(items), list):
+        raise SchreibwerkstattSchemaError("unexpected document")
+    try:
+        schema = int(data.get("schema") or 0)
+    except (TypeError, ValueError) as err:
+        raise SchreibwerkstattSchemaError(f"schema {data.get('schema')!r}") from err
+    if schema > SUPPORTED_SCHEMA:
+        raise SchreibwerkstattSchemaError(f"schema {schema}")
+    return data

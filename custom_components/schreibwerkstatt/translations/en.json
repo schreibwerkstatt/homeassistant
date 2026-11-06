@@ -20,6 +20,17 @@
         "data": {
           "api_token": "API token"
         }
+      },
+      "reconfigure": {
+        "title": "Change Schreibwerkstatt address",
+        "description": "New address of the same Schreibwerkstatt. The token stays; entities and history are kept.",
+        "data": {
+          "url": "URL",
+          "verify_ssl": "Verify SSL certificate"
+        },
+        "data_description": {
+          "url": "Base URL of your Schreibwerkstatt, as you open it in the browser (without /metrics)"
+        }
       }
     },
     "error": {
@@ -27,11 +38,14 @@
       "cannot_connect": "Could not reach the server.",
       "not_supported": "This server has no /metrics.json. Update Schreibwerkstatt to 4.16 or later.",
       "unsupported_schema": "The server uses a newer metrics format. Update this integration.",
-      "unknown": "Unexpected error, see the log."
+      "unknown": "Unexpected error, see the log.",
+      "redirect": "The server redirects to {location}. Enter that address instead (for example https:// instead of http://). The token is not sent after a redirect."
     },
     "abort": {
       "already_configured": "This Schreibwerkstatt instance is already set up.",
-      "reauth_successful": "Token renewed."
+      "reauth_successful": "Token renewed.",
+      "reconfigure_successful": "Address changed.",
+      "wrong_instance": "This address leads to a different Schreibwerkstatt instance. Add it as a new integration instead."
     }
   },
   "options": {
@@ -52,6 +66,22 @@
     "binary_sensor": {
       "daily_goal_reached": {
         "name": "Daily goal reached"
+      }
+    }
+  },
+  "issues": {
+    "orphaned_entities": {
+      "title": "Schreibwerkstatt ({title}): {count} entities no longer reported",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Delete entities no longer reported",
+            "description": "The server {title} has not reported these entities for at least {days} days:\n\n{entities}\n\nDelete them, including their history? Devices left without entities are removed as well. Should the server report a value again, the entity is created anew."
+          }
+        },
+        "abort": {
+          "not_loaded": "The Schreibwerkstatt integration is not loaded. Try again once it is running."
+        }
       }
     }
   }

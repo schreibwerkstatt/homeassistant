@@ -20,6 +20,17 @@
         "data": {
           "api_token": "API-Token"
         }
+      },
+      "reconfigure": {
+        "title": "Adresse der Schreibwerkstatt ändern",
+        "description": "Neue Adresse derselben Schreibwerkstatt. Der Token bleibt, Entitäten und Verlauf bleiben erhalten.",
+        "data": {
+          "url": "URL",
+          "verify_ssl": "SSL-Zertifikat prüfen"
+        },
+        "data_description": {
+          "url": "Basis-URL deiner Schreibwerkstatt, wie du sie im Browser öffnest (ohne /metrics)"
+        }
       }
     },
     "error": {
@@ -27,11 +38,14 @@
       "cannot_connect": "Server nicht erreichbar.",
       "not_supported": "Dieser Server hat kein /metrics.json. Bitte die Schreibwerkstatt auf 4.16 oder neuer aktualisieren.",
       "unsupported_schema": "Der Server nutzt ein neueres Metrik-Format. Bitte diese Integration aktualisieren.",
-      "unknown": "Unerwarteter Fehler, siehe Log."
+      "unknown": "Unerwarteter Fehler, siehe Log.",
+      "redirect": "Der Server leitet weiter auf {location}. Bitte diese Adresse eintragen (zum Beispiel https:// statt http://). Nach einer Weiterleitung wird der Token nicht mitgeschickt."
     },
     "abort": {
       "already_configured": "Diese Schreibwerkstatt ist bereits eingerichtet.",
-      "reauth_successful": "Token erneuert."
+      "reauth_successful": "Token erneuert.",
+      "reconfigure_successful": "Adresse geändert.",
+      "wrong_instance": "Unter dieser Adresse läuft eine andere Schreibwerkstatt. Bitte als neue Integration hinzufügen."
     }
   },
   "options": {
@@ -52,6 +66,22 @@
     "binary_sensor": {
       "daily_goal_reached": {
         "name": "Tagesziel erreicht"
+      }
+    }
+  },
+  "issues": {
+    "orphaned_entities": {
+      "title": "Schreibwerkstatt ({title}): {count} Entitäten werden nicht mehr gemeldet",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Nicht mehr gemeldete Entitäten löschen",
+            "description": "Der Server {title} meldet diese Entitäten seit mindestens {days} Tagen nicht mehr:\n\n{entities}\n\nSamt Verlauf löschen? Geräte, die danach keine Entitäten mehr haben, werden ebenfalls entfernt. Meldet der Server wieder einen Wert, entsteht die Entität neu."
+          }
+        },
+        "abort": {
+          "not_loaded": "Die Integration Schreibwerkstatt ist nicht geladen. Bitte erneut versuchen, sobald sie läuft."
+        }
       }
     }
   }

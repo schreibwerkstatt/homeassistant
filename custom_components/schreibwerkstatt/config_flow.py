@@ -30,6 +30,7 @@ from .api import (
     SchreibwerkstattClient,
     SchreibwerkstattConnectionError,
     SchreibwerkstattNotSupportedError,
+    SchreibwerkstattRedirectError,
     SchreibwerkstattSchemaError,
     normalize_url,
 )
@@ -45,26 +46,47 @@ USER_SCHEMA = vol.Schema(
     }
 )
 REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_API_TOKEN): str})
+RECONFIGURE_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_URL): str,
+        vol.Optional(CONF_VERIFY_SSL, default=True): bool,
+    }
+)
 
 
-async def _async_fetch(
-    hass: HomeAssistant, url: str, token: str, verify_ssl: bool
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Try one fetch; return (document, error key)."""
+class _Fetch:
+    """Outcome of one test fetch: the document, or an error key and its placeholders."""
+
+    def __init__(
+        self, doc: dict[str, Any] | None = None, error: str | None = None, location: str = ""
+    ) -> None:
+        self.doc = doc
+        self.error = error
+        self.placeholders = {"location": location}
+
+
+async def _async_fetch(hass: HomeAssistant, url: str, token: str, verify_ssl: bool) -> _Fetch:
+    """Try one fetch."""
     session = async_get_clientsession(hass, verify_ssl=verify_ssl)
     try:
-        return await SchreibwerkstattClient(session, url, token).async_get_metrics(), None
+        return _Fetch(await SchreibwerkstattClient(session, url, token).async_get_metrics())
     except SchreibwerkstattAuthError:
-        return None, "invalid_auth"
+        return _Fetch(error="invalid_auth")
     except SchreibwerkstattNotSupportedError:
-        return None, "not_supported"
+        return _Fetch(error="not_supported")
     except SchreibwerkstattSchemaError:
-        return None, "unsupported_schema"
+        return _Fetch(error="unsupported_schema")
+    except SchreibwerkstattRedirectError as err:
+        return _Fetch(error="redirect", location=err.location)
     except SchreibwerkstattConnectionError:
-        return None, "cannot_connect"
+        return _Fetch(error="cannot_connect")
     except Exception:  # noqa: BLE001 - surface anything else as "unknown"
         _LOGGER.exception("Unexpected error while contacting Schreibwerkstatt")
-        return None, "unknown"
+        return _Fetch(error="unknown")
+
+
+def _title(url: str) -> str:
+    return urlparse(url).hostname or "Schreibwerkstatt"
 
 
 class SchreibwerkstattConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -76,26 +98,29 @@ class SchreibwerkstattConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {"location": ""}
         if user_input is not None:
             url = normalize_url(user_input[CONF_URL])
             token = user_input[CONF_API_TOKEN].strip()
             verify = user_input.get(CONF_VERIFY_SSL, True)
-            doc, error = await _async_fetch(self.hass, url, token, verify)
-            if error:
-                errors["base"] = error
+            fetch = await _async_fetch(self.hass, url, token, verify)
+            placeholders = fetch.placeholders
+            if fetch.error:
+                errors["base"] = fetch.error
             else:
-                assert doc is not None
+                assert fetch.doc is not None
                 # instance_id survives URL changes; older servers fall back to the URL.
-                await self.async_set_unique_id(doc.get("instance_id") or url)
+                await self.async_set_unique_id(fetch.doc.get("instance_id") or url)
                 self._abort_if_unique_id_configured(updates={CONF_URL: url})
                 return self.async_create_entry(
-                    title=urlparse(url).hostname or "Schreibwerkstatt",
+                    title=_title(url),
                     data={CONF_URL: url, CONF_API_TOKEN: token, CONF_VERIFY_SSL: verify},
                 )
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(USER_SCHEMA, user_input),
             errors=errors,
+            description_placeholders=placeholders,
         )
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
@@ -105,20 +130,57 @@ class SchreibwerkstattConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {"location": ""}
         if user_input is not None:
             token = user_input[CONF_API_TOKEN].strip()
-            _doc, error = await _async_fetch(
+            fetch = await _async_fetch(
                 self.hass, entry.data[CONF_URL], token, entry.data.get(CONF_VERIFY_SSL, True)
             )
-            if error:
-                errors["base"] = error
+            placeholders = fetch.placeholders
+            if fetch.error:
+                errors["base"] = fetch.error
             else:
                 return self.async_update_reload_and_abort(entry, data_updates={CONF_API_TOKEN: token})
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=REAUTH_SCHEMA,
             errors=errors,
-            description_placeholders={"url": entry.data[CONF_URL]},
+            description_placeholders={**placeholders, "url": entry.data[CONF_URL]},
+        )
+
+    async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """New address (or certificate check) for the same server; the token stays."""
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {"location": ""}
+        if user_input is not None:
+            url = normalize_url(user_input[CONF_URL])
+            verify = user_input.get(CONF_VERIFY_SSL, True)
+            fetch = await _async_fetch(self.hass, url, entry.data[CONF_API_TOKEN], verify)
+            placeholders = fetch.placeholders
+            if fetch.error:
+                errors["base"] = fetch.error
+            else:
+                assert fetch.doc is not None
+                # Servers without instance_id are known by their URL, which is what changes.
+                if instance_id := fetch.doc.get("instance_id"):
+                    await self.async_set_unique_id(instance_id)
+                    self._abort_if_unique_id_mismatch(reason="wrong_instance")
+                old_title = _title(entry.data[CONF_URL])
+                return self.async_update_reload_and_abort(
+                    entry,
+                    title=_title(url) if entry.title == old_title else entry.title,
+                    data_updates={CONF_URL: url, CONF_VERIFY_SSL: verify},
+                )
+        suggested = user_input or {
+            CONF_URL: entry.data[CONF_URL],
+            CONF_VERIFY_SSL: entry.data.get(CONF_VERIFY_SSL, True),
+        }
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self.add_suggested_values_to_schema(RECONFIGURE_SCHEMA, suggested),
+            errors=errors,
+            description_placeholders=placeholders,
         )
 
     @staticmethod

@@ -7,16 +7,23 @@ import re
 
 from homeassistant.const import CONF_API_TOKEN, CONF_URL, CONF_VERIFY_SSL, Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import config_validation as cv, device_registry as dr, entity_registry as er
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    entity_registry as er,
+    issue_registry as ir,
+)
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
 from .api import SchreibwerkstattClient
 from .const import DOMAIN
-from .coordinator import SchreibwerkstattConfigEntry, SchreibwerkstattCoordinator
+from .coordinator import SchreibwerkstattConfigEntry, SchreibwerkstattCoordinator, scan_interval
 from .entity import instance_key, user_identifier
 from .frontend import async_setup_frontend
 from .history import async_import_history
+from .orphans import async_check_orphans, issue_id
+from .store import EntryStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,23 +43,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: SchreibwerkstattConfigEn
     """Set up Schreibwerkstatt from a config entry."""
     session = async_get_clientsession(hass, verify_ssl=entry.data.get(CONF_VERIFY_SSL, True))
     client = SchreibwerkstattClient(session, entry.data[CONF_URL], entry.data[CONF_API_TOKEN])
-    coordinator = SchreibwerkstattCoordinator(hass, entry, client)
+    store = EntryStore(hass, entry.entry_id)
+    await store.async_load()
+    coordinator = SchreibwerkstattCoordinator(hass, entry, client, store)
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(_async_reload))
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     # After the platforms: the import needs the sensors' entity IDs and units.
     entry.async_create_background_task(
         hass, async_import_history(hass, coordinator), f"{DOMAIN} history import"
     )
 
     @callback
-    def _sync_user_names() -> None:
+    def _on_update() -> None:
         _async_sync_user_device_names(hass, coordinator)
+        async_check_orphans(hass, coordinator)
 
-    _sync_user_names()
-    entry.async_on_unload(coordinator.async_add_listener(_sync_user_names))
+    _on_update()
+    entry.async_on_unload(coordinator.async_add_listener(_on_update))
     return True
 
 
@@ -84,12 +94,30 @@ async def async_migrate_entry(hass: HomeAssistant, entry: SchreibwerkstattConfig
 
 async def async_unload_entry(hass: HomeAssistant, entry: SchreibwerkstattConfigEntry) -> bool:
     """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
+    # Write now: a delayed save still pending would bring the file back after a removal.
+    await entry.runtime_data.store.async_save()
+    return True
 
 
-async def _async_reload(hass: HomeAssistant, entry: SchreibwerkstattConfigEntry) -> None:
-    """Options changed (scan interval): reload."""
-    await hass.config_entries.async_reload(entry.entry_id)
+async def async_remove_entry(hass: HomeAssistant, entry: SchreibwerkstattConfigEntry) -> None:
+    """Entry deleted: its store and issue go with it."""
+    await EntryStore(hass, entry.entry_id).async_remove()
+    ir.async_delete_issue(hass, DOMAIN, issue_id(entry.entry_id))
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: SchreibwerkstattConfigEntry) -> None:
+    """Options or data changed.
+
+    No reload: the polling interval is applied in place and the dashboard users are
+    read on every dashboard load. Flows that change the data (reauth, reconfigure,
+    a new URL) reload themselves; reloading here as well made that twice.
+    """
+    coordinator = entry.runtime_data
+    if coordinator.update_interval != (interval := scan_interval(entry)):
+        coordinator.update_interval = interval
+        await coordinator.async_request_refresh()
 
 
 @callback

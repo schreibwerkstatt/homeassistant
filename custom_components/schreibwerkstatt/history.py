@@ -9,6 +9,11 @@ Only days before the first statistic the recorder wrote itself are written, so
 what it collected is never overwritten, and a second run (every start) writes
 nothing that is already there. One row per day at 23:00 local, when the server
 takes its snapshot: a line or bar per day, which is what the charts ask for.
+
+A sensor is done once the recorder has taken over and the server's series has
+reached the recorder's first day; nothing new can come of it after that. While
+every sensor is done and the server version is the same, a start does not fetch
+the series at all.
 """
 
 from __future__ import annotations
@@ -22,17 +27,18 @@ from typing import Any
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
 from homeassistant.components.recorder.statistics import async_import_statistics, statistics_during_period
+from homeassistant.components.sensor.const import UNIT_CONVERTERS
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from homeassistant.util.unit_conversion import DurationConverter
+from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import BaseUnitConverter
 
 from .api import SchreibwerkstattError, SchreibwerkstattNotSupportedError
 from .const import DOMAIN
 from .coordinator import SchreibwerkstattCoordinator
-from .entity import instance_key
-from .models import derive, sample_key
-from .sensor import zone
+from .entity import sensor_unique_id
+from .models import Sample, derive, number, sample_key, zone
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,11 +53,17 @@ type Series = dict[str, tuple[dict[str, str], dict[date, float]]]
 
 
 async def async_import_history(hass: HomeAssistant, coordinator: SchreibwerkstattCoordinator) -> None:
-    """Fetch the daily series once and write what the recorder does not have yet."""
+    """Fetch the daily series and write what the recorder does not have yet."""
     if "recorder" not in hass.config.components:
         return
     recorder = get_instance(hass)
     if not await recorder.async_db_ready:
+        return
+    store = coordinator.store
+    sensors = _sensors(hass, coordinator)
+    version = coordinator.data.version
+    if version == store.history_version and sensors.keys() <= store.history_done:
+        _LOGGER.debug("History already imported for every sensor")
         return
     try:
         doc = await coordinator.client.async_get_history()
@@ -65,20 +77,19 @@ async def async_import_history(hass: HomeAssistant, coordinator: Schreibwerkstat
     tz = zone(doc.get("timezone") or coordinator.data.timezone)
     series = _parse(doc)
     _add_derived(series)
-    registry = er.async_get(hass)
-    root = instance_key(coordinator)
-    imported = []
-    for key, (_labels, points) in series.items():
-        sample = coordinator.data.samples.get(key)
-        entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{root}_{key}")
-        if sample is None or entity_id is None or registry.async_get(entity_id).disabled:
+    # Only hours that are over: the recorder writes the current one itself.
+    limit = dt_util.utcnow().replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    imported, done = [], set()
+    for key, (entity_id, sample) in sensors.items():
+        points = series[key][1] if key in series else {}
+        if not points:
+            done.add(key)  # nothing on the server for it
             continue
         metric = sample.metric
         with_sum = metric.state_class in _SUM_CLASSES
-        if not with_sum and metric.state_class != "measurement":
-            continue
         state = hass.states.get(entity_id)
         unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if state else None
+        converter = _unit_converter(metric.device_class, metric.unit, unit)
         convert = _converter(metric.device_class, metric.unit, unit)
         if convert is None:
             continue
@@ -88,7 +99,7 @@ async def async_import_history(hass: HomeAssistant, coordinator: Schreibwerkstat
         rows = _rows(
             points,
             tz,
-            cutoff=recorded.start,
+            cutoff=min(recorded.start, limit) if recorded.start else limit,
             convert=convert,
             with_sum=with_sum,
             daily_reset=metric.reset == "day",
@@ -96,21 +107,49 @@ async def async_import_history(hass: HomeAssistant, coordinator: Schreibwerkstat
         )
         rows = [row for row in rows if not _unchanged(row, recorded.imported, with_sum)]
         if rows:
-            async_import_statistics(hass, _metadata(entity_id, unit, with_sum=with_sum), rows)
+            meta = _metadata(entity_id, unit, with_sum=with_sum, converter=converter)
+            async_import_statistics(hass, meta, rows)
             imported.append(entity_id)
+        if recorded.start is not None and (
+            not with_sum or max(points) >= recorded.start.astimezone(tz).date()
+        ):
+            done.add(key)
     if imported:
         _LOGGER.info("Imported history for %d sensors: %s", len(imported), ", ".join(imported))
+    store.history_version = version
+    store.history_done = done
+    await store.async_save()
+
+
+def _sensors(hass: HomeAssistant, coordinator: SchreibwerkstattCoordinator) -> dict[str, tuple[str, Sample]]:
+    """Enabled sensors with long-term statistics: sample key → (entity_id, sample)."""
+    registry = er.async_get(hass)
+    out = {}
+    for key, sample in coordinator.data.samples.items():
+        if sample.metric.state_class not in (*_SUM_CLASSES, "measurement"):
+            continue
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, sensor_unique_id(coordinator, key))
+        if entity_id is None or registry.async_get(entity_id).disabled:
+            continue
+        out[key] = (entity_id, sample)
+    return out
 
 
 def _parse(doc: dict[str, Any]) -> Series:
+    """Series by sample key; a broken series or point is left out, not the whole import."""
     series: Series = {}
     for s in doc.get("series", []):
         try:
+            name = s["name"]
             labels = {str(k): str(v) for k, v in (s.get("labels") or {}).items()}
-            points = {date.fromisoformat(d): float(v) for d, v in s.get("points", [])}
-        except (TypeError, ValueError):
+            points = {}
+            for d, v in s.get("points") or []:
+                if (value := number(v)) is not None:
+                    points[date.fromisoformat(d)] = value
+        except (AttributeError, KeyError, TypeError, ValueError):
             continue
-        series[sample_key(s["name"], labels)] = (labels, points)
+        if isinstance(name, str):
+            series[sample_key(name, labels)] = (labels, points)
     return series
 
 
@@ -127,13 +166,32 @@ def _add_derived(series: Series) -> None:
 type Convert = Callable[[float], float]
 
 
-def _converter(device_class: str | None, server_unit: str | None, unit: str | None) -> Convert | None:
-    """Server value → value in the unit the sensor shows (durations: seconds → minutes)."""
-    if device_class != "duration":
-        return lambda v: v
-    if unit is None:
+def _unit_converter(
+    device_class: str | None, server_unit: str | None, unit: str | None
+) -> type[BaseUnitConverter] | None:
+    """HA's converter for the device class, if it knows both units."""
+    converter = UNIT_CONVERTERS.get(device_class)
+    if converter is None or unit not in converter.VALID_UNITS:
         return None
-    return lambda v: DurationConverter.convert(v, server_unit or "s", unit)
+    return converter if _server_unit(device_class, server_unit) in converter.VALID_UNITS else None
+
+
+def _server_unit(device_class: str | None, server_unit: str | None) -> str | None:
+    return server_unit or ("s" if device_class == "duration" else None)
+
+
+def _converter(device_class: str | None, server_unit: str | None, unit: str | None) -> Convert | None:
+    """Server value → value in the unit the sensor shows (seconds → minutes, bytes → MiB …).
+
+    None when that cannot be done: the statistics would hold numbers in the wrong unit.
+    """
+    source = _server_unit(device_class, server_unit)
+    if unit == source or (device_class not in UNIT_CONVERTERS and unit is None):
+        return lambda v: v
+    converter = _unit_converter(device_class, server_unit, unit)
+    if converter is None:
+        return None
+    return lambda v: converter.convert(v, source, unit)
 
 
 @dataclass(slots=True)
@@ -260,7 +318,13 @@ def _rows(
     return rows
 
 
-def _metadata(statistic_id: str, unit: str | None, *, with_sum: bool) -> StatisticMetaData:
+def _metadata(
+    statistic_id: str,
+    unit: str | None,
+    *,
+    with_sum: bool,
+    converter: type[BaseUnitConverter] | None = None,
+) -> StatisticMetaData:
     """Metadata as the recorder writes it for the sensor, across HA versions."""
     meta: dict[str, Any] = {
         "has_mean": not with_sum,
@@ -278,5 +342,5 @@ def _metadata(statistic_id: str, unit: str | None, *, with_sum: bool) -> Statist
         if "has_mean" not in fields:
             del meta["has_mean"]
     if "unit_class" in fields:  # HA 2025.10+
-        meta["unit_class"] = "duration" if unit in DurationConverter.VALID_UNITS else None
+        meta["unit_class"] = converter.UNIT_CLASS if converter else None
     return StatisticMetaData(**meta)  # type: ignore[typeddict-item]

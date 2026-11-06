@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 from custom_components.schreibwerkstatt.api import SchreibwerkstattAuthError
 from custom_components.schreibwerkstatt.const import DOMAIN
+from custom_components.schreibwerkstatt.diagnostics import async_get_config_entry_diagnostics
+from custom_components.schreibwerkstatt.sensor import Period
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
+from homeassistant.const import CONF_API_TOKEN, CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .conftest import INSTANCE
 
@@ -223,3 +229,114 @@ async def test_migrates_unique_ids_without_user_name(
     assert hass.states.get(kept.entity_id).state not in ("unavailable", "unknown")  # fed by the new key
     assert registry.async_get(dup.entity_id).unique_id.endswith("user_name=Ann")
     assert registry.async_get(untouched.entity_id).unique_id == f"{INSTANCE}_sw_users|status=active"
+
+
+async def test_missing_value_is_unavailable_not_zero(
+    hass: HomeAssistant, mock_metrics: AsyncMock, metrics_doc: dict[str, Any], config_entry
+) -> None:
+    """A counter at 0 for one poll would count as a reset and its value twice after."""
+    await _setup(hass, config_entry)
+    tokens = _entity_id(hass, "sensor", "sw_tokens_in_total|model=claude-sonnet-4-6|provider=claude")
+    doc = copy.deepcopy(metrics_doc)
+    for metric in doc["metrics"]:
+        if metric["name"] == "sw_tokens_in_total":
+            for sample in metric["samples"]:
+                sample["value"] = None
+    # Broken entries are left out, the rest still arrives.
+    doc["metrics"].append({"title": {"en": "no name"}, "samples": [{"value": 1}]})
+    doc["metrics"].append({"name": "sw_garbage", "samples": [{"value": "abc"}, "nonsense"]})
+    mock_metrics.return_value = doc
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+
+    assert config_entry.runtime_data.last_update_success
+    assert hass.states.get(tokens).state == "unavailable"
+    assert hass.states.get(_entity_id(hass, "sensor", "sw_chars")).state == "7200"
+
+
+async def test_broken_document_fails_the_update_cleanly(
+    hass: HomeAssistant, mock_metrics: AsyncMock, metrics_doc: dict[str, Any], config_entry
+) -> None:
+    await _setup(hass, config_entry)
+    doc = copy.deepcopy(metrics_doc)
+    doc["metrics"][0]["samples"][0]["labels"] = ["not", "a", "mapping"]
+    mock_metrics.return_value = doc
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert not config_entry.runtime_data.last_update_success
+    assert isinstance(config_entry.runtime_data.last_exception, UpdateFailed)
+
+
+async def test_options_change_does_not_reload(
+    hass: HomeAssistant, mock_metrics: AsyncMock, config_entry
+) -> None:
+    await _setup(hass, config_entry)
+    coordinator = config_entry.runtime_data
+    hass.config_entries.async_update_entry(config_entry, options={CONF_SCAN_INTERVAL: 300})
+    await hass.async_block_till_done()
+    assert config_entry.runtime_data is coordinator
+    assert coordinator.update_interval == timedelta(seconds=300)
+
+
+async def test_diagnostics_redact_token_and_people(
+    hass: HomeAssistant, mock_metrics: AsyncMock, config_entry
+) -> None:
+    config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(config_entry, options={"dashboard_users": ["anna@example.com"]})
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    diag = await async_get_config_entry_diagnostics(hass, config_entry)
+    assert diag["entry"]["data"][CONF_API_TOKEN] == "**REDACTED**"
+    assert diag["entry"]["options"]["dashboard_users"] == "**REDACTED**"
+    assert "anna@example.com" not in repr(diag)
+
+
+ZURICH = ZoneInfo("Europe/Zurich")
+WINDOW = timedelta(minutes=10)
+
+
+def _now(day: int, hour: int, minute: int = 0) -> datetime:
+    return datetime(2026, 10, day, hour, minute, tzinfo=ZURICH)
+
+
+def test_period_follows_the_clock() -> None:
+    period = Period("day")
+    assert period.update(100, _now(4, 12), WINDOW) == _now(4, 0)
+    assert period.update(150, _now(4, 23, 50), WINDOW) == _now(4, 0)
+    # Reset on time: new day on both clocks.
+    assert period.update(0, _now(5, 0, 1), WINDOW) == _now(5, 0)
+
+
+def test_period_server_resets_before_ha_midnight() -> None:
+    period = Period("day")
+    period.update(150, _now(4, 23, 55), WINDOW)
+    # The server is ahead: its day is over, HA's clock is not there yet.
+    assert period.update(0, _now(4, 23, 58), WINDOW) == _now(5, 0)
+    # Midnight on HA's clock is no second reset.
+    assert period.update(40, _now(5, 0, 1), WINDOW) == _now(5, 0)
+
+
+def test_period_server_resets_after_ha_midnight() -> None:
+    period = Period("day")
+    period.update(150, _now(4, 23, 59), WINDOW)
+    # HA's clock has passed midnight, the server still reports yesterday.
+    assert period.update(150, _now(5, 0, 1), WINDOW) == _now(4, 0)
+    assert period.update(0, _now(5, 0, 2), WINDOW) == _now(5, 0)
+
+
+def test_period_deleting_text_is_no_reset() -> None:
+    period = Period("day")
+    period.update(1000, _now(4, 12), WINDOW)
+    # Net characters fall during the day: outside the window, nothing happens.
+    assert period.update(100, _now(4, 13), WINDOW) == _now(4, 0)
+    # Close to midnight a small drop is still no reset.
+    period.update(1000, _now(4, 23, 50), WINDOW)
+    assert period.update(800, _now(4, 23, 55), WINDOW) == _now(4, 0)
+
+
+def test_period_month() -> None:
+    period = Period("month")
+    assert period.update(5, _now(4, 12), WINDOW) == datetime(2026, 10, 1, tzinfo=ZURICH)
+    assert period.update(0, datetime(2026, 10, 31, 23, 57, tzinfo=ZURICH), WINDOW) == datetime(
+        2026, 11, 1, tzinfo=ZURICH
+    )

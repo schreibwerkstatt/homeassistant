@@ -8,9 +8,11 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.const import CONF_API_TOKEN
 from homeassistant.core import HomeAssistant
 
+from .const import CONF_DASHBOARD_USERS
 from .coordinator import SchreibwerkstattConfigEntry
 
-TO_REDACT = {CONF_API_TOKEN}
+# The dashboard users are e-mail addresses.
+TO_REDACT = {CONF_API_TOKEN, CONF_DASHBOARD_USERS}
 
 
 async def async_get_config_entry_diagnostics(
@@ -23,7 +25,7 @@ async def async_get_config_entry_diagnostics(
     return {
         "entry": {
             "data": async_redact_data(dict(entry.data), TO_REDACT),
-            "options": dict(entry.options),
+            "options": async_redact_data(dict(entry.options), TO_REDACT),
         },
         "server": {
             "version": data.version,

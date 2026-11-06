@@ -1,6 +1,6 @@
 # Schreibwerkstatt for Home Assistant
 
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories)
+[![Marketplace Custom](https://img.shields.io/badge/Marketplace-Custom-41BDF5.svg)](https://www.home-assistant.io/integrations/marketplace/)
 [![Validate](https://github.com/schreibwerkstatt/homeassistant/actions/workflows/validate.yml/badge.svg)](https://github.com/schreibwerkstatt/homeassistant/actions/workflows/validate.yml)
 [![Tests](https://github.com/schreibwerkstatt/homeassistant/actions/workflows/tests.yml/badge.svg)](https://github.com/schreibwerkstatt/homeassistant/actions/workflows/tests.yml)
 
@@ -23,7 +23,17 @@ Home Assistant automatically, without a new release of this integration.
 
 ## Installation
 
-### HACS
+### Marketplace (Home Assistant 2026.11 or later)
+
+1. **Settings → Marketplace** → **Add from link** (upper right) → enter `schreibwerkstatt/homeassistant`.
+   Custom repositories need a GitHub connection; the Marketplace walks you through it (device code, no password).
+2. Install **Schreibwerkstatt**, restart Home Assistant.
+3. **Settings → Devices & services → Add integration → Schreibwerkstatt**.
+
+Updates show up under **Settings → Updates**. The Marketplace checks custom repositories every 48 hours.
+Installs made with HACS before 2026.11 move to the Marketplace automatically.
+
+### HACS (Home Assistant before 2026.11)
 
 1. HACS → ⋮ → **Custom repositories** → add `https://github.com/schreibwerkstatt/homeassistant`, category **Integration**.
 2. Install **Schreibwerkstatt**, restart Home Assistant.

@@ -23,7 +23,7 @@ from homeassistant.loader import async_get_integration
 
 from .const import CONF_DASHBOARD_USERS, DOMAIN, GOAL_METRIC
 from .coordinator import SchreibwerkstattCoordinator
-from .entity import instance_key, user_identifier
+from .entity import goal_unique_id, sensor_unique_id, user_identifier
 from .models import USER_LABELS
 
 _LOGGER = logging.getLogger(__name__)
@@ -128,7 +128,6 @@ def async_dashboard_entities(hass: HomeAssistant) -> list[dict[str, Any]]:
 def _entities(hass: HomeAssistant, coordinator: SchreibwerkstattCoordinator) -> list[dict[str, Any]]:
     """Enabled entities of one entry, keyed by metric, labels and user."""
     registry = er.async_get(hass)
-    root = instance_key(coordinator)
     out = []
 
     def _add(platform: str, unique_id: str, metric: str, labels: dict[str, str], user: str | None) -> None:
@@ -139,9 +138,9 @@ def _entities(hass: HomeAssistant, coordinator: SchreibwerkstattCoordinator) -> 
 
     for sample in coordinator.data.samples.values():
         labels = {k: v for k, v in sample.labels.items() if k not in USER_LABELS}
-        _add("sensor", f"{root}_{sample.key}", sample.metric.name, labels, sample.user)
+        _add("sensor", sensor_unique_id(coordinator, sample.key), sample.metric.name, labels, sample.user)
         if sample.metric.name == GOAL_METRIC and sample.user:
-            _add("binary_sensor", f"{root}_{GOAL_REACHED}_{sample.user}", GOAL_REACHED, {}, sample.user)
+            _add("binary_sensor", goal_unique_id(coordinator, sample.user), GOAL_REACHED, {}, sample.user)
     return out
 
 

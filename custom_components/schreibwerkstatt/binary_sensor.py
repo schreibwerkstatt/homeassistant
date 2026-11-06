@@ -8,7 +8,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import GOAL_METRIC
 from .coordinator import SchreibwerkstattConfigEntry, SchreibwerkstattCoordinator
-from .entity import SchreibwerkstattEntity, instance_key
+from .entity import SchreibwerkstattEntity, goal_unique_id
 from .models import Sample
 
 
@@ -43,7 +43,7 @@ class DailyGoalReachedSensor(SchreibwerkstattEntity, BinarySensorEntity):
 
     def __init__(self, coordinator: SchreibwerkstattCoordinator, sample: Sample) -> None:
         super().__init__(coordinator, sample)
-        self._attr_unique_id = f"{instance_key(coordinator)}_daily_goal_reached_{sample.user}"
+        self._attr_unique_id = goal_unique_id(coordinator, sample.user)
 
     @property
     def is_on(self) -> bool | None:

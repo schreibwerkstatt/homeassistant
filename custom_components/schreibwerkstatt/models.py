@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+import math
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Labels that identify a user; they select the device, not the entity name.
 USER_LABELS = ("user", "user_name")
@@ -151,7 +153,12 @@ class MetricsData:
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> MetricsData:
-        """Build from the server document; unknown fields are ignored."""
+        """Build from the server document; unknown fields are ignored.
+
+        A metric without a name and a sample without a number are left out: the
+        entity turns unavailable instead of reading 0, which a total_increasing
+        counter would take for a reset and count its whole value again.
+        """
         data = cls(
             instance_id=raw.get("instance_id"),
             version=raw.get("version"),
@@ -159,10 +166,12 @@ class MetricsData:
             includes_users=bool(raw.get("includes_users")),
         )
         for m in raw.get("metrics", []):
+            if not isinstance(m, dict) or not isinstance(m.get("name"), str):
+                continue
             metric = Metric(
                 name=m["name"],
                 group=m.get("group") or "server",
-                title=m.get("title") or {},
+                title=m.get("title") if isinstance(m.get("title"), dict) else {},
                 unit=m.get("unit"),
                 device_class=m.get("device_class"),
                 state_class=m.get("state_class"),
@@ -173,10 +182,12 @@ class MetricsData:
                 entity=m.get("entity", True) is not False,
                 per_user=bool(m.get("per_user")),
             )
-            for s in m.get("samples", []):
+            for s in m.get("samples") or []:
+                if not isinstance(s, dict) or (value := number(s.get("value"))) is None:
+                    continue
                 labels = {str(k): str(v) for k, v in (s.get("labels") or {}).items()}
                 key = sample_key(metric.name, labels)
-                data.samples[key] = Sample(key, metric, labels, float(s.get("value") or 0))
+                data.samples[key] = Sample(key, metric, labels, value)
                 if metric.per_user and labels.get("user"):
                     data.users[labels["user"]] = labels.get("user_name") or labels["user"]
         for metric, labels, value in derive({k: (v.labels, v.value) for k, v in data.samples.items()}):
@@ -190,3 +201,20 @@ class MetricsData:
             if sample.metric.name == name and label in sample.labels:
                 return sample.labels[label]
         return None
+
+
+def number(value: Any) -> float | None:
+    """A finite number, None for null, text or NaN."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def zone(name: str) -> ZoneInfo:
+    """Time zone of the server, UTC if unknown here."""
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")

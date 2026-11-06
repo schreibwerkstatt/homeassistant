@@ -1,5 +1,5 @@
 ---
-description: Arbeitsstand committen, Version setzen, testen, Tag und GitHub-Release erstellen (HACS meldet das Update in Home Assistant)
+description: Arbeitsstand committen, Version setzen, testen, Tag und GitHub-Release erstellen (der Marketplace meldet das Update in Home Assistant)
 argument-hint: "[patch|minor|major|x.y.z] [--draft] [--dry-run]"
 allowed-tools: Bash(git *), Bash(gh *), Bash(.venv/bin/*), Bash(sed *), Bash(python3 *), Read, Write, Edit
 ---
@@ -7,7 +7,7 @@ allowed-tools: Bash(git *), Bash(gh *), Bash(.venv/bin/*), Bash(sed *), Bash(pyt
 # Release
 
 Erzeugt aus dem aktuellen Stand ein GitHub-Release. **Das Release ist das, was
-Home Assistant sieht:** HACS vergleicht die installierte Version mit dem neuesten
+Home Assistant sieht:** Der Marketplace (vor HA 2026.11: HACS) vergleicht die installierte Version mit dem neuesten
 GitHub-Release dieses Repositories und zeigt dann unter *Einstellungen → Updates*
 ein Update an, samt den Release-Notizen. Ein Tag ohne Release, ein Entwurf oder ein
 Commit auf `main` allein lösen dort nichts aus.
@@ -21,7 +21,7 @@ Argumente: `$ARGUMENTS`
 - `patch` · `minor` · `major` · `x.y.z` — Version vorher erhöhen. Ohne Angabe
   wird die Version aus `manifest.json` genommen, wie sie ist (Normalfall nur beim
   allerersten Release).
-- `--draft` — Release als Entwurf anlegen. HACS sieht Entwürfe **nicht**; das
+- `--draft` — Release als Entwurf anlegen. Der Marketplace sieht Entwürfe **nicht**; das
   Update erscheint erst, wenn der Entwurf auf GitHub veröffentlicht wird.
 - `--dry-run` — prüfen, testen und die Notizen zeigen, aber weder Version
   schreiben noch committen, pushen oder ein Release anlegen.
@@ -101,7 +101,7 @@ python3 -m json.tool custom_components/schreibwerkstatt/manifest.json > /dev/nul
 ```
 
 Ein Fehlschlag beendet den Release. Ausgabe zeigen, nichts umdeuten, Tests nicht
-anpassen. Hassfest und die HACS-Validierung laufen nur in GitHub Actions
+anpassen. Hassfest und die HACS-/Marketplace-Validierung (`hacs/action`) laufen nur in GitHub Actions
 (`validate.yml`); nach dem Push in Schritt 7 deren Ergebnis prüfen.
 
 ## 4. Notizen schreiben
@@ -184,7 +184,7 @@ gh release create "v<version>" \
   # bei --draft zusätzlich: --draft
 ```
 
-Kein ZIP-Anhang: HACS lädt den Ordner `custom_components/schreibwerkstatt` aus dem
+Kein ZIP-Anhang: Der Marketplace lädt den Ordner `custom_components/schreibwerkstatt` aus dem
 getaggten Stand.
 
 Scheitert `gh release create`, nachdem Tag und Push durch sind: sagen und den
@@ -200,16 +200,17 @@ gh run list --branch main --limit 4          # Tests + Validate für den Release
 ```
 
 Laufen die Actions noch, das sagen (nicht warten). Ist eine bereits rot, das
-deutlich melden: Das Release ist trotzdem draussen und HACS bietet es an.
+deutlich melden: Das Release ist trotzdem draussen und der Marketplace bietet es an.
 
 ## 8. Abschluss
 
 Melden: alte → neue Version, Commit-Hash, Tag, Release-URL, welche Dateien der
 Commit mitgenommen hat, Stand der Actions. Dazu für Home Assistant:
 
-- HACS prüft nicht sofort. Wer das Update gleich sehen will: in HACS beim
-  Repository *Schreibwerkstatt* → ⋮ → **Update information**. Danach erscheint es
-  unter *Einstellungen → Updates*.
+- Der Marketplace prüft nicht sofort: Eigene Repositories (über *Add from link*
+  hinzugefügt) prüft er alle 48 Stunden und nur mit GitHub-Verbindung. Danach
+  erscheint das Update unter *Einstellungen → Updates*. Einen dokumentierten
+  Knopf zum sofortigen Prüfen gibt es nicht.
 - Nach dem Installieren Home Assistant neu starten.
 - Bei `--draft`: in HA erscheint nichts, bis der Entwurf auf GitHub
   veröffentlicht ist.

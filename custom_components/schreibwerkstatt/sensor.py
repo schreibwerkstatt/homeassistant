@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, tzinfo
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -15,11 +15,13 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import SchreibwerkstattConfigEntry, SchreibwerkstattCoordinator
-from .entity import SchreibwerkstattEntity, instance_key, ui_lang
-from .models import Sample
+from .entity import SchreibwerkstattEntity, sensor_unique_id, ui_lang
+from .models import Sample, zone
 
 # Calendar month on the billing side is cut in UTC (Anthropic cost report).
 UTC_RESET_METRICS = {"sw_billed_usd_month"}
+# How far HA's clock and the server's reset may lie apart at a period change.
+MIN_RESET_WINDOW = timedelta(minutes=10)
 
 
 async def async_setup_entry(
@@ -61,7 +63,8 @@ class SchreibwerkstattSensor(SchreibwerkstattEntity, SensorEntity):
     def __init__(self, coordinator: SchreibwerkstattCoordinator, sample: Sample) -> None:
         super().__init__(coordinator, sample)
         metric = sample.metric
-        self._attr_unique_id = f"{instance_key(coordinator)}_{sample.key}"
+        self._attr_unique_id = sensor_unique_id(coordinator, sample.key)
+        self._period: Period | None = None
         name = metric.title_for(ui_lang(coordinator))
         if sample.name_labels:
             name = f"{name} ({' · '.join(sample.name_labels)})"
@@ -103,19 +106,65 @@ class SchreibwerkstattSensor(SchreibwerkstattEntity, SensorEntity):
     def last_reset(self) -> datetime | None:
         """Start of the current day/month for periodically restarting totals."""
         sample = self.sample
-        if sample is None or not sample.metric.reset or self._attr_state_class != SensorStateClass.TOTAL:
+        if sample is None or sample.metric.reset not in ("day", "month"):
             return None
+        if self._attr_state_class != SensorStateClass.TOTAL:
+            return None
+        if self._period is None:
+            self._period = Period(sample.metric.reset)
         tz = UTC if sample.metric.name in UTC_RESET_METRICS else zone(self.coordinator.data.timezone)
-        now = datetime.now(tz)
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        if sample.metric.reset == "month":
-            start = start.replace(day=1)
-        return start
+        interval = self.coordinator.update_interval or timedelta()
+        return self._period.update(sample.value, datetime.now(tz), max(MIN_RESET_WINDOW, 2 * interval))
 
 
-def zone(name: str) -> ZoneInfo:
-    """Time zone of the server, UTC if unknown here."""
-    try:
-        return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError):
-        return ZoneInfo("UTC")
+def period_start(now: datetime, reset: str) -> datetime:
+    """Start of the day or month `now` falls in, in now's time zone."""
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.replace(day=1) if reset == "month" else start
+
+
+def next_period(start: datetime, reset: str) -> datetime:
+    """Start of the period after the one beginning at `start` (DST-safe)."""
+    tz: tzinfo | None = start.tzinfo
+    day = start.date() + timedelta(days=32 if reset == "month" else 1)
+    if reset == "month":
+        day = day.replace(day=1)
+    return datetime(day.year, day.month, day.day, tzinfo=tz)
+
+
+@dataclass(slots=True)
+class Period:
+    """The period the server's value counts in, which need not be the one on HA's clock.
+
+    The server restarts its daily and monthly totals by its own clock. A new
+    last_reset makes the recorder start a new cycle at the value it sees then, so
+    when the two clocks disagree around midnight, one day takes what belongs to the
+    other. Within `window` of a period change the value decides:
+    - it falls to less than half while HA's clock is still in the old period: the
+      server has started the new one;
+    - HA's clock is in the new period, but the value has not fallen yet: the server
+      still reports the old one.
+    """
+
+    reset: str
+    start: datetime | None = None
+    last: float | None = None
+
+    def update(self, value: float, now: datetime, window: timedelta) -> datetime:
+        clock = period_start(now, self.reset)
+        if self.start is None:
+            self.start = clock
+        elif clock > self.start:
+            late = self.last is not None and self.last > 0 and value >= self.last and now - clock < window
+            if not late:
+                self.start = clock
+        elif (
+            clock == self.start
+            and self.last is not None
+            and self.last > 0
+            and value < self.last / 2
+            and next_period(clock, self.reset) - now < window
+        ):
+            self.start = next_period(clock, self.reset)
+        self.last = value
+        return self.start
