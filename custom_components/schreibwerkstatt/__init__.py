@@ -19,7 +19,7 @@ from homeassistant.helpers.typing import ConfigType
 from .api import SchreibwerkstattClient
 from .const import DOMAIN
 from .coordinator import SchreibwerkstattConfigEntry, SchreibwerkstattCoordinator, scan_interval
-from .entity import instance_key, user_identifier
+from .entity import instance_key, main_device_info, user_identifier
 from .frontend import async_setup_frontend
 from .history import async_import_history
 from .orphans import async_check_orphans, issue_id
@@ -58,7 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SchreibwerkstattConfigEn
 
     @callback
     def _on_update() -> None:
-        _async_sync_user_device_names(hass, coordinator)
+        _async_sync_devices(hass, coordinator)
         async_check_orphans(hass, coordinator)
 
     _on_update()
@@ -121,9 +121,17 @@ async def _async_options_updated(hass: HomeAssistant, entry: SchreibwerkstattCon
 
 
 @callback
-def _async_sync_user_device_names(hass: HomeAssistant, coordinator: SchreibwerkstattCoordinator) -> None:
-    """User devices follow the display name on the server (a rename in HA stays)."""
+def _async_sync_devices(hass: HomeAssistant, coordinator: SchreibwerkstattCoordinator) -> None:
+    """Devices follow the server: its version, the users' display names (a rename in HA stays).
+
+    Device info only reaches the registry when an entity is added, so without this an
+    updated server or a renamed user would show the old value until the next start.
+    """
     registry = dr.async_get(hass)
+    info = main_device_info(coordinator)
+    main = registry.async_get_device(identifiers=info["identifiers"])
+    if main and main.sw_version != info.get("sw_version"):
+        registry.async_update_device(main.id, sw_version=info.get("sw_version"))
     for email, name in coordinator.data.users.items():
         device = registry.async_get_device(identifiers={user_identifier(coordinator, email)})
         if device and device.name != name:

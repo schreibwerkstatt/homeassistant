@@ -340,3 +340,71 @@ def test_period_month() -> None:
     assert period.update(0, datetime(2026, 10, 31, 23, 57, tzinfo=ZURICH), WINDOW) == datetime(
         2026, 11, 1, tzinfo=ZURICH
     )
+
+
+async def test_deleted_entity_comes_back_with_its_value(
+    hass: HomeAssistant, mock_metrics: AsyncMock, config_entry
+) -> None:
+    await _setup(hass, config_entry)
+    registry = er.async_get(hass)
+    books = _entity_id(hass, "sensor", f"sw_user_books|{ANNA}")
+    goal = _entity_id(hass, "binary_sensor", "daily_goal_reached_anna@example.com")
+    registry.async_remove(books)
+    registry.async_remove(goal)
+    await hass.async_block_till_done()
+    assert hass.states.get(books) is None
+
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(_entity_id(hass, "sensor", f"sw_user_books|{ANNA}")).state == "1"
+    assert hass.states.get(_entity_id(hass, "binary_sensor", "daily_goal_reached_anna@example.com"))
+
+
+async def test_last_reset_of_totals(hass: HomeAssistant, mock_metrics: AsyncMock, config_entry) -> None:
+    await _setup(hass, config_entry)
+    state = hass.states.get(_entity_id(hass, "sensor", "sw_cost_usd_month"))
+    assert datetime.fromisoformat(state.attributes["last_reset"]).day == 1
+    # total_increasing restarts on its own: no last_reset.
+    state = hass.states.get(_entity_id(hass, "sensor", "sw_writing_seconds_today"))
+    assert "last_reset" not in state.attributes
+
+
+async def test_server_update_reaches_the_device(
+    hass: HomeAssistant, mock_metrics: AsyncMock, metrics_doc: dict[str, Any], config_entry
+) -> None:
+    await _setup(hass, config_entry)
+    doc = copy.deepcopy(metrics_doc)
+    doc["version"] = "4.30.0"
+    for metric in doc["metrics"]:
+        if metric["name"] == "sw_build_info":
+            metric["samples"][0]["labels"]["version"] = "4.30.0"
+    mock_metrics.return_value = doc
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, INSTANCE)})
+    assert device.sw_version == "4.30.0"
+
+
+async def test_goal_without_user_has_no_binary_sensor(
+    hass: HomeAssistant, mock_metrics: AsyncMock, metrics_doc: dict[str, Any], config_entry
+) -> None:
+    doc = copy.deepcopy(metrics_doc)
+    for metric in doc["metrics"]:
+        if metric["name"] == "sw_user_daily_goal_percent":
+            metric["samples"] = [{"labels": {}, "value": 50}]
+    mock_metrics.return_value = doc
+    await _setup(hass, config_entry)
+    assert not hass.states.async_entity_ids("binary_sensor")
+
+
+async def test_duration_without_unit_is_seconds(
+    hass: HomeAssistant, mock_metrics: AsyncMock, metrics_doc: dict[str, Any], config_entry
+) -> None:
+    doc = copy.deepcopy(metrics_doc)
+    for metric in doc["metrics"]:
+        if metric["name"] == "sw_writing_seconds_today":
+            metric["unit"] = None
+    mock_metrics.return_value = doc
+    await _setup(hass, config_entry)
+    state = hass.states.get(_entity_id(hass, "sensor", "sw_writing_seconds_today"))
+    assert state.attributes["unit_of_measurement"] == "min"

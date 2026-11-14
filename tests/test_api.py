@@ -87,3 +87,18 @@ async def test_redirect_is_not_followed(hass: HomeAssistant, aioclient_mock: Aio
         await session.close()
     assert err.value.location == "https://sw.example.com"
     assert len(aioclient_mock.mock_calls) == 1
+
+
+async def test_redirect_drops_query(hass: HomeAssistant, aioclient_mock: AiohttpClientMocker) -> None:
+    aioclient_mock.get(
+        "http://sw.example.com/metrics.json",
+        status=302,
+        headers={"Location": "https://login.example.com/metrics.json?next=%2F#top"},
+    )
+    session = aioclient_mock.create_session(hass.loop)
+    try:
+        with pytest.raises(SchreibwerkstattRedirectError) as err:
+            await SchreibwerkstattClient(session, "http://sw.example.com", TOKEN).async_get_metrics()
+    finally:
+        await session.close()
+    assert err.value.location == "https://login.example.com"

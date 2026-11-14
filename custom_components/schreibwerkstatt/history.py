@@ -25,7 +25,7 @@ import logging
 from typing import Any
 
 from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
+from homeassistant.components.recorder.models import StatisticData, StatisticMeanType, StatisticMetaData
 from homeassistant.components.recorder.statistics import async_import_statistics, statistics_during_period
 from homeassistant.components.sensor.const import UNIT_CONVERTERS
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT
@@ -38,7 +38,7 @@ from .api import SchreibwerkstattError, SchreibwerkstattNotSupportedError
 from .const import DOMAIN
 from .coordinator import SchreibwerkstattCoordinator
 from .entity import sensor_unique_id
-from .models import Sample, derive, number, sample_key, zone
+from .models import Metric, Sample, derive, number, sample_key, server_unit, zone
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -89,10 +89,10 @@ async def async_import_history(hass: HomeAssistant, coordinator: Schreibwerkstat
         with_sum = metric.state_class in _SUM_CLASSES
         state = hass.states.get(entity_id)
         unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if state else None
-        converter = _unit_converter(metric.device_class, metric.unit, unit)
-        convert = _converter(metric.device_class, metric.unit, unit)
-        if convert is None:
+        conversion = _conversion(metric, unit)
+        if conversion is None:
             continue
+        converter, convert = conversion
 
         slots = _slots(points, tz)
         recorded = await recorder.async_add_executor_job(_recorded, hass, entity_id, with_sum, slots, tz)
@@ -166,32 +166,21 @@ def _add_derived(series: Series) -> None:
 type Convert = Callable[[float], float]
 
 
-def _unit_converter(
-    device_class: str | None, server_unit: str | None, unit: str | None
-) -> type[BaseUnitConverter] | None:
-    """HA's converter for the device class, if it knows both units."""
-    converter = UNIT_CONVERTERS.get(device_class)
-    if converter is None or unit not in converter.VALID_UNITS:
-        return None
-    return converter if _server_unit(device_class, server_unit) in converter.VALID_UNITS else None
-
-
-def _server_unit(device_class: str | None, server_unit: str | None) -> str | None:
-    return server_unit or ("s" if device_class == "duration" else None)
-
-
-def _converter(device_class: str | None, server_unit: str | None, unit: str | None) -> Convert | None:
-    """Server value → value in the unit the sensor shows (seconds → minutes, bytes → MiB …).
+def _conversion(metric: Metric, unit: str | None) -> tuple[type[BaseUnitConverter] | None, Convert] | None:
+    """HA's unit converter (for the metadata, if any) and server value → value in the
+    unit the sensor shows (seconds → minutes, bytes → MiB …).
 
     None when that cannot be done: the statistics would hold numbers in the wrong unit.
     """
-    source = _server_unit(device_class, server_unit)
-    if unit == source or (device_class not in UNIT_CONVERTERS and unit is None):
-        return lambda v: v
-    converter = _unit_converter(device_class, server_unit, unit)
+    source = server_unit(metric)
+    converter = UNIT_CONVERTERS.get(metric.device_class)
+    if converter is not None and not {source, unit} <= converter.VALID_UNITS:
+        converter = None
+    if unit == source or (metric.device_class not in UNIT_CONVERTERS and unit is None):
+        return converter, lambda v: v
     if converter is None:
         return None
-    return lambda v: converter.convert(v, source, unit)
+    return converter, lambda v: converter.convert(v, source, unit)
 
 
 @dataclass(slots=True)
@@ -325,22 +314,13 @@ def _metadata(
     with_sum: bool,
     converter: type[BaseUnitConverter] | None = None,
 ) -> StatisticMetaData:
-    """Metadata as the recorder writes it for the sensor, across HA versions."""
-    meta: dict[str, Any] = {
-        "has_mean": not with_sum,
-        "has_sum": with_sum,
-        "name": None,
-        "source": "recorder",
-        "statistic_id": statistic_id,
-        "unit_of_measurement": unit,
-    }
-    fields = StatisticMetaData.__annotations__
-    if "mean_type" in fields:  # HA 2025.4+: mean_type replaces has_mean
-        from homeassistant.components.recorder.models import StatisticMeanType  # noqa: PLC0415
-
-        meta["mean_type"] = StatisticMeanType.NONE if with_sum else StatisticMeanType.ARITHMETIC
-        if "has_mean" not in fields:
-            del meta["has_mean"]
-    if "unit_class" in fields:  # HA 2025.10+
-        meta["unit_class"] = converter.UNIT_CLASS if converter else None
-    return StatisticMetaData(**meta)  # type: ignore[typeddict-item]
+    """Metadata as the recorder writes it for the sensor."""
+    return StatisticMetaData(
+        mean_type=StatisticMeanType.NONE if with_sum else StatisticMeanType.ARITHMETIC,
+        has_sum=with_sum,
+        name=None,
+        source="recorder",
+        statistic_id=statistic_id,
+        unit_class=converter.UNIT_CLASS if converter else None,
+        unit_of_measurement=unit,
+    )

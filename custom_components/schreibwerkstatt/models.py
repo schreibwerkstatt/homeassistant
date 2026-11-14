@@ -203,6 +203,11 @@ class MetricsData:
         return None
 
 
+def server_unit(metric: Metric) -> str | None:
+    """Unit of the values on the wire; durations without one are seconds."""
+    return metric.unit or ("s" if metric.device_class == "duration" else None)
+
+
 def number(value: Any) -> float | None:
     """A finite number, None for null, text or NaN."""
     try:

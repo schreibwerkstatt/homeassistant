@@ -54,39 +54,42 @@ RECONFIGURE_SCHEMA = vol.Schema(
 )
 
 
-class _Fetch:
-    """Outcome of one test fetch: the document, or an error key and its placeholders."""
-
-    def __init__(
-        self, doc: dict[str, Any] | None = None, error: str | None = None, location: str = ""
-    ) -> None:
-        self.doc = doc
-        self.error = error
-        self.placeholders = {"location": location}
+type Fetched = tuple[dict[str, Any] | None, dict[str, str], dict[str, str]]
 
 
-async def _async_fetch(hass: HomeAssistant, url: str, token: str, verify_ssl: bool) -> _Fetch:
-    """Try one fetch."""
+async def _async_fetch(hass: HomeAssistant, url: str, token: str, verify_ssl: bool) -> Fetched:
+    """Try one fetch: the document, or form errors and their placeholders."""
     session = async_get_clientsession(hass, verify_ssl=verify_ssl)
+    location = ""
     try:
-        return _Fetch(await SchreibwerkstattClient(session, url, token).async_get_metrics())
+        return await SchreibwerkstattClient(session, url, token).async_get_metrics(), {}, {"location": ""}
     except SchreibwerkstattAuthError:
-        return _Fetch(error="invalid_auth")
+        error = "invalid_auth"
     except SchreibwerkstattNotSupportedError:
-        return _Fetch(error="not_supported")
+        error = "not_supported"
     except SchreibwerkstattSchemaError:
-        return _Fetch(error="unsupported_schema")
+        error = "unsupported_schema"
     except SchreibwerkstattRedirectError as err:
-        return _Fetch(error="redirect", location=err.location)
+        error, location = "redirect", err.location
     except SchreibwerkstattConnectionError:
-        return _Fetch(error="cannot_connect")
+        error = "cannot_connect"
     except Exception:  # noqa: BLE001 - surface anything else as "unknown"
         _LOGGER.exception("Unexpected error while contacting Schreibwerkstatt")
-        return _Fetch(error="unknown")
+        error = "unknown"
+    return None, {"base": error}, {"location": location}
 
 
 def _title(url: str) -> str:
     return urlparse(url).hostname or "Schreibwerkstatt"
+
+
+def _keyed_by_url(entry: ConfigEntry) -> bool:
+    """Set up from a server without instance_id: the entry's unique ID is its first URL.
+
+    It stays that URL for good, also once the server reports an instance_id: every
+    entity's unique ID starts with it.
+    """
+    return "://" in (entry.unique_id or "")
 
 
 class SchreibwerkstattConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -103,15 +106,13 @@ class SchreibwerkstattConfigFlow(ConfigFlow, domain=DOMAIN):
             url = normalize_url(user_input[CONF_URL])
             token = user_input[CONF_API_TOKEN].strip()
             verify = user_input.get(CONF_VERIFY_SSL, True)
-            fetch = await _async_fetch(self.hass, url, token, verify)
-            placeholders = fetch.placeholders
-            if fetch.error:
-                errors["base"] = fetch.error
-            else:
-                assert fetch.doc is not None
+            # Also catches an entry keyed by URL whose server reports an instance_id by now.
+            self._async_abort_entries_match({CONF_URL: url})
+            doc, errors, placeholders = await _async_fetch(self.hass, url, token, verify)
+            if doc is not None:
                 # instance_id survives URL changes; older servers fall back to the URL.
-                await self.async_set_unique_id(fetch.doc.get("instance_id") or url)
-                self._abort_if_unique_id_configured(updates={CONF_URL: url})
+                await self.async_set_unique_id(doc.get("instance_id") or url)
+                self._abort_if_unique_id_configured(updates={CONF_URL: url, CONF_VERIFY_SSL: verify})
                 return self.async_create_entry(
                     title=_title(url),
                     data={CONF_URL: url, CONF_API_TOKEN: token, CONF_VERIFY_SSL: verify},
@@ -133,13 +134,10 @@ class SchreibwerkstattConfigFlow(ConfigFlow, domain=DOMAIN):
         placeholders: dict[str, str] = {"location": ""}
         if user_input is not None:
             token = user_input[CONF_API_TOKEN].strip()
-            fetch = await _async_fetch(
+            doc, errors, placeholders = await _async_fetch(
                 self.hass, entry.data[CONF_URL], token, entry.data.get(CONF_VERIFY_SSL, True)
             )
-            placeholders = fetch.placeholders
-            if fetch.error:
-                errors["base"] = fetch.error
-            else:
+            if doc is not None:
                 return self.async_update_reload_and_abort(entry, data_updates={CONF_API_TOKEN: token})
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -156,14 +154,10 @@ class SchreibwerkstattConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             url = normalize_url(user_input[CONF_URL])
             verify = user_input.get(CONF_VERIFY_SSL, True)
-            fetch = await _async_fetch(self.hass, url, entry.data[CONF_API_TOKEN], verify)
-            placeholders = fetch.placeholders
-            if fetch.error:
-                errors["base"] = fetch.error
-            else:
-                assert fetch.doc is not None
-                # Servers without instance_id are known by their URL, which is what changes.
-                if instance_id := fetch.doc.get("instance_id"):
+            doc, errors, placeholders = await _async_fetch(self.hass, url, entry.data[CONF_API_TOKEN], verify)
+            if doc is not None:
+                # An entry keyed by URL cannot tell: its key is the URL, which is what changes.
+                if (instance_id := doc.get("instance_id")) and not _keyed_by_url(entry):
                     await self.async_set_unique_id(instance_id)
                     self._abort_if_unique_id_mismatch(reason="wrong_instance")
                 old_title = _title(entry.data[CONF_URL])

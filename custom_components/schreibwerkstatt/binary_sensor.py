@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import GOAL_METRIC
 from .coordinator import SchreibwerkstattConfigEntry, SchreibwerkstattCoordinator
-from .entity import SchreibwerkstattEntity, goal_unique_id
+from .entity import SchreibwerkstattEntity, async_add_for_samples, goal_unique_id, is_goal
 from .models import Sample
 
 
@@ -18,22 +17,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """One goal sensor per user with a daily goal; more appear when goals are set."""
-    coordinator = entry.runtime_data
-    known: set[str] = set()
-
-    @callback
-    def _add_new() -> None:
-        new = []
-        for key, sample in coordinator.data.samples.items():
-            if sample.metric.name != GOAL_METRIC or key in known:
-                continue
-            known.add(key)
-            new.append(DailyGoalReachedSensor(coordinator, sample))
-        if new:
-            async_add_entities(new)
-
-    _add_new()
-    entry.async_on_unload(coordinator.async_add_listener(_add_new))
+    async_add_for_samples(entry, async_add_entities, is_goal, DailyGoalReachedSensor)
 
 
 class DailyGoalReachedSensor(SchreibwerkstattEntity, BinarySensorEntity):
@@ -43,6 +27,7 @@ class DailyGoalReachedSensor(SchreibwerkstattEntity, BinarySensorEntity):
 
     def __init__(self, coordinator: SchreibwerkstattCoordinator, sample: Sample) -> None:
         super().__init__(coordinator, sample)
+        assert sample.user is not None
         self._attr_unique_id = goal_unique_id(coordinator, sample.user)
 
     @property

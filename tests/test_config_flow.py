@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.schreibwerkstatt.api import (
     SchreibwerkstattAuthError,
@@ -153,3 +154,57 @@ async def test_reconfigure_rejects_other_instance(
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "wrong_instance"
     assert config_entry.data[CONF_URL] == URL
+
+
+def _keyed_by_url(hass: HomeAssistant) -> MockConfigEntry:
+    """Entry set up from a server that did not report an instance_id yet."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="sw.example.com",
+        unique_id=URL,
+        data={CONF_URL: URL, CONF_API_TOKEN: TOKEN, CONF_VERIFY_SSL: True},
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+async def test_reconfigure_entry_keyed_by_url_after_server_update(
+    hass: HomeAssistant, mock_metrics: AsyncMock
+) -> None:
+    # The server reports an instance_id by now; the entry keeps its URL key for good.
+    entry = _keyed_by_url(hass)
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_URL: "https://neu.example.com"}
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_URL] == "https://neu.example.com"
+    assert entry.unique_id == URL
+
+
+async def test_user_flow_same_url_as_entry_keyed_by_url(hass: HomeAssistant, mock_metrics: AsyncMock) -> None:
+    _keyed_by_url(hass)
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_URL: f"{URL}/", CONF_API_TOKEN: TOKEN}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+    mock_metrics.assert_not_called()
+
+
+async def test_same_instance_takes_over_certificate_check(
+    hass: HomeAssistant, mock_metrics: AsyncMock, config_entry
+) -> None:
+    config_entry.add_to_hass(hass)
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_URL: "https://sw-intern.example.com", CONF_API_TOKEN: TOKEN, CONF_VERIFY_SSL: False},
+    )
+    assert result["reason"] == "already_configured"
+    assert config_entry.data[CONF_URL] == "https://sw-intern.example.com"
+    assert config_entry.data[CONF_VERIFY_SSL] is False

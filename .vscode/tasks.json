@@ -4,7 +4,7 @@
     {
       "label": "Setup: venv + Testabhängigkeiten",
       "type": "shell",
-      "command": "python3.12 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -r requirements_test.txt",
+      "command": "uv venv --clear --python 3.13 .venv && uv pip install --python .venv -r requirements_test.txt",
       "problemMatcher": []
     },
     {

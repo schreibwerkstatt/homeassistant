@@ -21,9 +21,9 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.loader import async_get_integration
 
-from .const import CONF_DASHBOARD_USERS, DOMAIN, GOAL_METRIC
+from .const import CONF_DASHBOARD_USERS, DOMAIN
 from .coordinator import SchreibwerkstattCoordinator
-from .entity import goal_unique_id, sensor_unique_id, user_identifier
+from .entity import goal_unique_id, is_goal, sensor_unique_id, user_identifier
 from .models import USER_LABELS
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,18 +66,15 @@ async def _async_ensure_resource(hass: HomeAssistant, url: str) -> bool:
     so the caller can retry on home-assistant start-up.
     """
     # Imported late: the frontend package is not installed everywhere (tests).
-    from homeassistant.components.frontend import add_extra_js_url
+    from homeassistant.components.frontend import add_extra_js_url  # noqa: PLC0415
+    from homeassistant.components.lovelace.const import LOVELACE_DATA  # noqa: PLC0415
 
-    lovelace = hass.data.get("lovelace")
+    lovelace = hass.data.get(LOVELACE_DATA)
     if lovelace is None:
         return False
 
-    # HA 2025.1 stores lovelace as a plain dict, newer releases as a dataclass.
-    if isinstance(lovelace, dict):
-        resources = lovelace.get("resources")
-    else:
-        resources = getattr(lovelace, "resources", None)
-    if resources is None or not hasattr(resources, "async_create_item"):
+    resources = lovelace.resources
+    if not hasattr(resources, "async_create_item"):
         _LOGGER.warning(
             "Lovelace is in YAML mode: to stop the 'Timeout waiting for strategy "
             "element' error when configuring the Schreibwerkstatt dashboard, add "
@@ -139,7 +136,7 @@ def _entities(hass: HomeAssistant, coordinator: SchreibwerkstattCoordinator) -> 
     for sample in coordinator.data.samples.values():
         labels = {k: v for k, v in sample.labels.items() if k not in USER_LABELS}
         _add("sensor", sensor_unique_id(coordinator, sample.key), sample.metric.name, labels, sample.user)
-        if sample.metric.name == GOAL_METRIC and sample.user:
+        if is_goal(sample):
             _add("binary_sensor", goal_unique_id(coordinator, sample.user), GOAL_REACHED, {}, sample.user)
     return out
 

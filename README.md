@@ -16,7 +16,7 @@ Home Assistant automatically, without a new release of this integration.
 
 - Schreibwerkstatt **4.16** or later (provides `/metrics.json`); **4.21** or later for characters
   per person and per day and for the [history back-fill](#history)
-- Home Assistant **2025.1** or later
+- Home Assistant **2025.11** or later
 - An API token from Schreibwerkstatt: **Admin → Settings → API / Metrics → Create token**.
   Tick **Per-user values** to also receive writing time, characters, words, daily goal and cost per user
   (no book titles, no content). Issuing such a token is recorded in the admin audit log.
@@ -170,8 +170,9 @@ automation:
 ## Development
 
 ```bash
-python3.12 -m venv .venv && . .venv/bin/activate
-pip install -r requirements_test.txt
+# Home Assistant 2025.11 needs Python 3.13; uv fetches it if the system has none.
+uv venv --python 3.13 .venv && . .venv/bin/activate
+uv pip install -r requirements_test.txt
 ruff check . && pytest
 ```
 

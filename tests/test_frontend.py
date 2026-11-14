@@ -124,14 +124,14 @@ async def test_resource_not_duplicated_and_deduped(hass: HomeAssistant) -> None:
     resources = _Resources(
         [other, {"id": "a", "url": f"{STRATEGY_URL}?v=1"}, {"id": "b", "url": f"{STRATEGY_URL}?v=2"}]
     )
-    hass.data["lovelace"] = {"resources": resources}
+    hass.data["lovelace"] = SimpleNamespace(resources=resources)
 
     assert await _async_ensure_resource(hass, url)
     assert resources.items == [other, {"id": "a", "url": url}]
 
     # A fresh, unloaded collection on the next start must not get a second copy.
     resources = _Resources([other, {"id": "a", "url": url}])
-    hass.data["lovelace"] = {"resources": resources}
+    hass.data["lovelace"] = SimpleNamespace(resources=resources)
     assert await _async_ensure_resource(hass, url)
     assert resources.items == [other, {"id": "a", "url": url}]
 
@@ -142,7 +142,6 @@ async def test_resource_created_when_missing(hass: HomeAssistant) -> None:
     url = f"{STRATEGY_URL}?v=9"
     other = {"id": "x", "url": "/local/card.js", "type": "module"}
     resources = _Resources([other])
-    # Newer HA releases keep lovelace data in a dataclass instead of a dict.
     hass.data["lovelace"] = SimpleNamespace(resources=resources)
 
     assert await _async_ensure_resource(hass, url)
@@ -156,7 +155,7 @@ async def test_resource_yaml_mode(hass: HomeAssistant) -> None:
     url = f"{STRATEGY_URL}?v=9"
     # ResourceYAMLCollection: read-only, no async_create_item.
     yaml_resources = SimpleNamespace(loaded=True, async_items=list)
-    hass.data["lovelace"] = {"resources": yaml_resources}
+    hass.data["lovelace"] = SimpleNamespace(resources=yaml_resources)
 
     with patch("homeassistant.components.frontend.add_extra_js_url") as add_js:
         assert await _async_ensure_resource(hass, url)

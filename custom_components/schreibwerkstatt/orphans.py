@@ -8,6 +8,7 @@ entities, and devices left without any.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant, callback
@@ -18,9 +19,9 @@ from homeassistant.helpers import (
 )
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, GOAL_METRIC
+from .const import DOMAIN
 from .coordinator import SchreibwerkstattCoordinator
-from .entity import goal_unique_id, sensor_unique_id
+from .entity import goal_unique_id, is_goal, sensor_unique_id
 
 ORPHAN_AFTER = timedelta(days=7)
 TRANSLATION_KEY = "orphaned_entities"
@@ -40,7 +41,7 @@ def _expected(coordinator: SchreibwerkstattCoordinator) -> set[str]:
     for key, sample in coordinator.data.samples.items():
         if sample.metric.entity:
             out.add(f"sensor|{sensor_unique_id(coordinator, key)}")
-        if sample.metric.name == GOAL_METRIC:
+        if is_goal(sample):
             out.add(f"binary_sensor|{goal_unique_id(coordinator, sample.user)}")
     return out
 
@@ -97,23 +98,34 @@ def _async_update_issue(hass: HomeAssistant, coordinator: SchreibwerkstattCoordi
         is_persistent=False,
         severity=ir.IssueSeverity.WARNING,
         translation_key=TRANSLATION_KEY,
-        translation_placeholders={
-            "title": entry.title,
-            "count": str(len(entities)),
-            "days": str(ORPHAN_AFTER.days),
-            "entities": "\n".join(f"- {e}" for e in entities),
-        },
+        translation_placeholders=placeholders(entry.title, entities),
         data={"entry_id": entry.entry_id},
     )
 
 
+def placeholders(title: str, entities: list[str]) -> dict[str, str]:
+    """Placeholders of the issue and of its confirm form."""
+    return {
+        "title": title,
+        "count": str(len(entities)),
+        "days": str(ORPHAN_AFTER.days),
+        "entities": "\n".join(f"- {e}" for e in entities),
+    }
+
+
 @callback
-def async_remove_orphans(hass: HomeAssistant, coordinator: SchreibwerkstattCoordinator) -> list[str]:
-    """Delete the orphaned entities and the devices left without entities."""
+def async_remove_orphans(
+    hass: HomeAssistant, coordinator: SchreibwerkstattCoordinator, shown: Collection[str]
+) -> list[str]:
+    """Delete the entities of `shown` that are still orphaned, and devices left without entities.
+
+    One that came back since the list was shown stays, and so does one that went missing
+    meanwhile: nothing is deleted that the user did not see in the list.
+    """
     entry_id = coordinator.config_entry.entry_id
     entities = er.async_get(hass)
     devices = dr.async_get(hass)
-    removed = orphaned(hass, coordinator, dt_util.utcnow())
+    removed = [e for e in orphaned(hass, coordinator, dt_util.utcnow()) if e in shown]
     for entity_id in removed:
         entry = entities.async_get(entity_id)
         if entry is not None:
@@ -124,5 +136,6 @@ def async_remove_orphans(hass: HomeAssistant, coordinator: SchreibwerkstattCoord
         if device.id not in in_use:
             devices.async_update_device(device.id, remove_config_entry_id=entry_id)
     coordinator.store.async_delay_save()
+    # The next poll raises it again if more are orphaned than were shown.
     ir.async_delete_issue(hass, DOMAIN, issue_id(entry_id))
     return removed

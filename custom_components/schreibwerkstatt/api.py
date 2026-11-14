@@ -85,6 +85,7 @@ class SchreibwerkstattClient:
                         # Not followed: the token would go along to wherever it points.
                         location = resp.headers.get("Location", "")
                         target = resp.url.join(URL(location)) if location else resp.url
+                        target = target.with_query(None).with_fragment(None)
                         raise SchreibwerkstattRedirectError(str(target).removesuffix(path))
                     if resp.status == 404:
                         raise SchreibwerkstattNotSupportedError(f"no {path}")

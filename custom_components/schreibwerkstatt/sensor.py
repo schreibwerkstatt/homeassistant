@@ -15,8 +15,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import SchreibwerkstattConfigEntry, SchreibwerkstattCoordinator
-from .entity import SchreibwerkstattEntity, sensor_unique_id, ui_lang
-from .models import Sample, zone
+from .entity import SchreibwerkstattEntity, async_add_for_samples, sensor_unique_id, ui_lang
+from .models import Sample, server_unit, zone
 
 # Calendar month on the billing side is cut in UTC (Anthropic cost report).
 UTC_RESET_METRICS = {"sw_billed_usd_month"}
@@ -30,22 +30,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Create sensors now and for every sample that shows up later."""
-    coordinator = entry.runtime_data
-    known: set[str] = set()
-
-    @callback
-    def _add_new() -> None:
-        new = []
-        for key, sample in coordinator.data.samples.items():
-            if key in known or not sample.metric.entity:
-                continue
-            known.add(key)
-            new.append(SchreibwerkstattSensor(coordinator, sample))
-        if new:
-            async_add_entities(new)
-
-    _add_new()
-    entry.async_on_unload(coordinator.async_add_listener(_add_new))
+    async_add_for_samples(entry, async_add_entities, lambda s: s.metric.entity, SchreibwerkstattSensor)
 
 
 def _enum[T](cls: type[T], value: str | None) -> T | None:
@@ -78,8 +63,11 @@ class SchreibwerkstattSensor(SchreibwerkstattEntity, SensorEntity):
         self._attr_device_class = device_class
         if device_class == SensorDeviceClass.TIMESTAMP:
             return
-        self._attr_native_unit_of_measurement = metric.unit
+        self._attr_native_unit_of_measurement = server_unit(metric)
         self._attr_state_class = _enum(SensorStateClass, metric.state_class)
+        if self._attr_state_class == SensorStateClass.TOTAL and metric.reset in ("day", "month"):
+            self._period = Period(metric.reset)
+            self._update_last_reset()
         if device_class == SensorDeviceClass.DURATION:
             # Seconds on the wire; minutes read better for daily times, hours for uptime.
             self._attr_suggested_unit_of_measurement = (
@@ -102,19 +90,21 @@ class SchreibwerkstattSensor(SchreibwerkstattEntity, SensorEntity):
         value = sample.value
         return int(value) if value.is_integer() else value
 
-    @property
-    def last_reset(self) -> datetime | None:
-        """Start of the current day/month for periodically restarting totals."""
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._update_last_reset()
+        super()._handle_coordinator_update()
+
+    def _update_last_reset(self) -> None:
+        """Start of the current day/month for periodically restarting totals; once per poll."""
         sample = self.sample
-        if sample is None or sample.metric.reset not in ("day", "month"):
-            return None
-        if self._attr_state_class != SensorStateClass.TOTAL:
-            return None
-        if self._period is None:
-            self._period = Period(sample.metric.reset)
+        if self._period is None or sample is None:
+            return
         tz = UTC if sample.metric.name in UTC_RESET_METRICS else zone(self.coordinator.data.timezone)
         interval = self.coordinator.update_interval or timedelta()
-        return self._period.update(sample.value, datetime.now(tz), max(MIN_RESET_WINDOW, 2 * interval))
+        self._attr_last_reset = self._period.update(
+            sample.value, datetime.now(tz), max(MIN_RESET_WINDOW, 2 * interval)
+        )
 
 
 def period_start(now: datetime, reset: str) -> datetime:

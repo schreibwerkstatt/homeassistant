@@ -268,8 +268,8 @@ const ACTIVE_DAYS = 14;
 
 // Seen within ACTIVE_DAYS. Without a last-seen value (sensor off, not yet reported): active.
 function isActive(hass, ent, user) {
-  const seen = ent.list("sw_user_last_seen_timestamp_seconds", user.user)[0];
-  const t = Date.parse(seen && hass.states[seen.entity_id]?.state);
+  const seen = ent.peek("sw_user_last_seen_timestamp_seconds", user.user);
+  const t = Date.parse(seen && hass.states[seen]?.state);
   return Number.isNaN(t) || Date.now() - t < ACTIVE_DAYS * 86400_000;
 }
 
@@ -348,27 +348,31 @@ function userSection(t, ent, hass, user) {
 // People not shown in full (not seen for ACTIVE_DAYS, or not chosen in the options):
 // one row each with when they were last seen.
 function compactSection(heading, ent, users) {
-  const entities = users.map((user) => {
-    const seen = ent.id("sw_user_last_seen_timestamp_seconds", {}, user.user);
-    ent.retire(user.user);
-    return seen && { entity: seen, name: user.name, icon: "mdi:account-clock" };
-  });
+  const entities = compact(
+    users.map((user) => {
+      const seen = ent.id("sw_user_last_seen_timestamp_seconds", {}, user.user);
+      ent.retire(user.user);
+      return seen && { entity: seen, name: user.name, icon: "mdi:account-clock" };
+    }),
+  );
   return section(heading, "mdi:account-multiple-outline", [
-    compact(entities).length > 0 && { type: "entities", entities: compact(entities), state_color: false },
+    entities.length > 0 && { type: "entities", entities, state_color: false },
   ]);
 }
 
 // One row per active person: characters today (words on older servers); the heading
 // opens the people view.
 function todayPeople(t, ent, users) {
-  const rows = users.map((user) => {
-    const entity = ent.peek("sw_user_chars_today", user.user) || ent.peek("sw_user_words_today", user.user);
-    return entity && { entity, name: user.name };
-  });
+  const entities = compact(
+    users.map((user) => {
+      const entity = ent.peek("sw_user_chars_today", user.user) || ent.peek("sw_user_words_today", user.user);
+      return entity && { entity, name: user.name };
+    }),
+  );
   return section(
     t.todayPerPerson,
     "mdi:account-group",
-    [compact(rows).length > 0 && { type: "entities", entities: compact(rows), state_color: false }],
+    [entities.length > 0 && { type: "entities", entities, state_color: false }],
     { tap: { action: "navigate", navigation_path: "personen" } },
   );
 }
@@ -399,6 +403,7 @@ function todayView(t, ent, entry, hass, people) {
   const chars = ent.id("sw_chars");
   const costToday = ent.id("sw_cost_usd_today");
   const billed = ent.id("sw_billed_usd_month");
+  const active24 = ent.id("sw_active_users_24h");
 
   return view(
     t.today,
@@ -422,14 +427,7 @@ function todayView(t, ent, entry, hass, people) {
             : stats(t.writing7, [[writing, t.writing]], "change", { days_to_show: 7 }),
         ],
         {
-          badges: [
-            ent.id("sw_active_users_24h") && {
-              type: "entity",
-              entity: ent.id("sw_active_users_24h"),
-              icon: "mdi:account-clock",
-              color: "green",
-            },
-          ],
+          badges: [active24 && { type: "entity", entity: active24, icon: "mdi:account-clock", color: "green" }],
         },
       ),
       section(t.chars, "mdi:format-letter-case", [
@@ -460,7 +458,7 @@ function todayView(t, ent, entry, hass, people) {
 }
 
 function historyView(t, ent, hass, people, usage) {
-  const id = (m, l) => ent.id(m, l);
+  const id = ent.id.bind(ent);
   const per = (metric, users = people.active) => users.map((user) => [ent.id(metric, {}, user.user), user.name]);
   const aiUsers = people.active.filter((user) => !isZero(hass, ent.id("sw_user_cost_usd_total", {}, user.user)));
   const models = inUse(
@@ -567,7 +565,7 @@ function historyView(t, ent, hass, people, usage) {
 }
 
 function opsView(t, ent, usage) {
-  const id = (m, l) => ent.id(m, l);
+  const id = ent.id.bind(ent);
   const models = ent.list("sw_cost_usd_total").map((e) => e.labels);
   const tokenModels = ent.list("sw_tokens_in_total").map((e) => e.labels);
   // Every model ever used, the one in use first.
@@ -647,7 +645,7 @@ function opsView(t, ent, usage) {
 }
 
 function diagView(t, ent) {
-  const id = (m, l) => ent.id(m, l);
+  const id = ent.id.bind(ent);
   const sections = [
     section(t.process, "mdi:memory", [
       tile(id("sw_process_uptime_seconds"), t.uptime, "blue-grey"),
