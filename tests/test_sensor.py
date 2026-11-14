@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from custom_components.schreibwerkstatt.api import SchreibwerkstattAuthError
 from custom_components.schreibwerkstatt.const import DOMAIN
 from custom_components.schreibwerkstatt.diagnostics import async_get_config_entry_diagnostics
+from custom_components.schreibwerkstatt.entity import find_device
 from custom_components.schreibwerkstatt.sensor import Period
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.const import CONF_API_TOKEN, CONF_SCAN_INTERVAL
@@ -63,13 +64,13 @@ async def test_sensors_follow_the_description(
 async def test_devices(hass: HomeAssistant, mock_metrics: AsyncMock, config_entry) -> None:
     await _setup(hass, config_entry)
     devices = dr.async_get(hass)
-    main = devices.async_get_device(identifiers={(DOMAIN, INSTANCE)})
+    main = find_device(devices, config_entry.runtime_data, (DOMAIN, INSTANCE))
     assert main.sw_version == "4.16.0"
     assert main.configuration_url == "https://sw.example.com"
-    anna = devices.async_get_device(identifiers={(DOMAIN, f"{INSTANCE}_user_anna@example.com")})
+    anna = find_device(devices, config_entry.runtime_data, (DOMAIN, f"{INSTANCE}_user_anna@example.com"))
     assert anna.name == "Anna"
     assert anna.via_device_id == main.id
-    ai = devices.async_get_device(identifiers={(DOMAIN, f"{INSTANCE}_ai")})
+    ai = find_device(devices, config_entry.runtime_data, (DOMAIN, f"{INSTANCE}_ai"))
     assert ai.name == "Schreibwerkstatt AI"
     # sw_build_info is device info, not an entity.
     assert (
@@ -195,7 +196,8 @@ async def test_renamed_user_keeps_entities(
     # Same entity, still reporting; the device follows the new display name.
     assert _entity_id(hass, "sensor", f"sw_user_writing_seconds_today|{ANNA}") == writing
     assert float(hass.states.get(writing).state) == 30
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, f"{INSTANCE}_user_anna@example.com")})
+    anna = (DOMAIN, f"{INSTANCE}_user_anna@example.com")
+    device = find_device(dr.async_get(hass), config_entry.runtime_data, anna)
     assert device.name == "Anna Muster"
 
 
@@ -381,7 +383,7 @@ async def test_server_update_reaches_the_device(
     mock_metrics.return_value = doc
     await config_entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, INSTANCE)})
+    device = find_device(dr.async_get(hass), config_entry.runtime_data, (DOMAIN, INSTANCE))
     assert device.sw_version == "4.30.0"
 
 

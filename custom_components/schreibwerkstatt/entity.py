@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from homeassistant.core import callback
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.device_registry import DeviceEntry, DeviceEntryType, DeviceInfo, DeviceRegistry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -65,21 +65,37 @@ def device_info_for(coordinator: SchreibwerkstattCoordinator, sample: Sample) ->
         return main_device_info(coordinator)
     lang = ui_lang(coordinator)
     root = instance_key(coordinator)
-    sub = DeviceInfo(
-        manufacturer="Schreibwerkstatt",
-        via_device=(DOMAIN, root),
-        entry_type=DeviceEntryType.SERVICE,
-    )
+    # Plain kwargs, not `DeviceInfo | DeviceInfo`: since HA 2026.11 DeviceInfo is a
+    # dataclass, no longer a TypedDict, and merging with `|` raises TypeError.
+    sub = {
+        "manufacturer": "Schreibwerkstatt",
+        "via_device": (DOMAIN, root),
+        "entry_type": DeviceEntryType.SERVICE,
+    }
     if group == "user" and sample.user:
-        return sub | DeviceInfo(
+        return DeviceInfo(
+            **sub,
             identifiers={user_identifier(coordinator, sample.user)},
             name=sample.labels.get("user_name") or sample.user,
             model=USER_MODEL[lang],
         )
     title = GROUP_NAMES[lang].get(group, group)
-    return sub | DeviceInfo(
-        identifiers={(DOMAIN, f"{root}_{group}")}, name=f"Schreibwerkstatt {title}", model=title
+    return DeviceInfo(
+        **sub, identifiers={(DOMAIN, f"{root}_{group}")}, name=f"Schreibwerkstatt {title}", model=title
     )
+
+
+def find_device(
+    registry: DeviceRegistry, coordinator: SchreibwerkstattCoordinator, identifier: tuple[str, str]
+) -> DeviceEntry | None:
+    """This entry's device with `identifier`.
+
+    HA 2026.8+ deprecates async_get_device (identifiers are only unique per config
+    entry); the replacement does not exist in older versions we still support.
+    """
+    if by_identifier := getattr(registry, "async_get_device_by_identifier", None):
+        return by_identifier(identifier, coordinator.config_entry.entry_id)
+    return registry.async_get_device(identifiers={identifier})
 
 
 @callback

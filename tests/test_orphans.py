@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 from freezegun.api import FrozenDateTimeFactory
 
 from custom_components.schreibwerkstatt.const import DOMAIN
+from custom_components.schreibwerkstatt.entity import find_device
 from custom_components.schreibwerkstatt.orphans import issue_id
 from homeassistant.components.repairs import repairs_flow_manager
 from homeassistant.core import HomeAssistant
@@ -74,8 +75,8 @@ async def test_gone_user_raises_issue_after_a_week_and_fix_deletes(
     assert issues.async_get_issue(DOMAIN, key) is None
     # Ben's device had nothing left; Anna's keeps hers.
     devices = dr.async_get(hass)
-    assert devices.async_get_device(identifiers={(DOMAIN, f"{INSTANCE}_user_{BEN}")}) is None
-    assert devices.async_get_device(identifiers={(DOMAIN, f"{INSTANCE}_user_anna@example.com")})
+    assert find_device(devices, config_entry.runtime_data, (DOMAIN, f"{INSTANCE}_user_{BEN}")) is None
+    assert find_device(devices, config_entry.runtime_data, (DOMAIN, f"{INSTANCE}_user_anna@example.com"))
     assert entities.async_get_entity_id("sensor", DOMAIN, f"{INSTANCE}_sw_chars")
 
 

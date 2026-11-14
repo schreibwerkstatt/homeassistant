@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.schreibwerkstatt.const import DOMAIN
+from custom_components.schreibwerkstatt.entity import find_device
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
@@ -76,7 +77,7 @@ async def test_renamed_user_device_and_entity(
     assert await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
     devices = dr.async_get(hass)
-    anna = devices.async_get_device(identifiers={(DOMAIN, f"{INSTANCE}_user_anna@example.com")})
+    anna = find_device(devices, config_entry.runtime_data, (DOMAIN, f"{INSTANCE}_user_anna@example.com"))
     devices.async_update_device(anna.id, name_by_user="Zora")
     registry = er.async_get(hass)
     old = registry.async_get_entity_id(

@@ -23,7 +23,7 @@ from homeassistant.loader import async_get_integration
 
 from .const import CONF_DASHBOARD_USERS, DOMAIN
 from .coordinator import SchreibwerkstattCoordinator
-from .entity import goal_unique_id, is_goal, sensor_unique_id, user_identifier
+from .entity import find_device, goal_unique_id, is_goal, sensor_unique_id, user_identifier
 from .models import USER_LABELS
 
 _LOGGER = logging.getLogger(__name__)
@@ -146,7 +146,7 @@ def _users(hass: HomeAssistant, coordinator: SchreibwerkstattCoordinator) -> lis
     registry = dr.async_get(hass)
     out = []
     for email, name in coordinator.data.users.items():
-        device = registry.async_get_device(identifiers={user_identifier(coordinator, email)})
+        device = find_device(registry, coordinator, user_identifier(coordinator, email))
         out.append(
             {
                 "user": email,
